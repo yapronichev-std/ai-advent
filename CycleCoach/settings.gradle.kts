@@ -21,4 +21,11 @@ dependencyResolutionManagement {
 
 rootProject.name = "CycleCoach"
 include(":app")
+include(":feature:training")
+include(":feature:profile")
+include(":core:model")
+include(":core:data")
+include(":core:database")
+include(":core:network")
+include(":core:ui")
  
