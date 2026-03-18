@@ -34,7 +34,7 @@ class ChatViewModel : ViewModel() {
                 .filter { !it.isError }
                 .map { ApiMessage(role = it.role, content = it.text) }
 
-            apiService.sendMessage(apiMessages).fold(
+            apiService.sendMessage(apiMessages,0.7,300).fold(
                 onSuccess = { reply ->
                     _messages.update { it + ChatMessage(role = "assistant", text = reply) }
                 },
