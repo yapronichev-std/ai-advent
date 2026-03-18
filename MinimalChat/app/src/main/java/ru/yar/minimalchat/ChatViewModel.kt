@@ -2,6 +2,7 @@ package ru.yar.minimalchat
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -10,6 +11,7 @@ import kotlinx.coroutines.launch
 data class ChatMessage(
     val role: String,
     val text: String,
+    val label: String? = null,
     val isError: Boolean = false
 )
 
@@ -34,20 +36,39 @@ class ChatViewModel : ViewModel() {
                 .filter { !it.isError }
                 .map { ApiMessage(role = it.role, content = it.text) }
 
-            apiService.sendMessage(apiMessages,0.7,300).fold(
-                onSuccess = { reply ->
-                    _messages.update { it + ChatMessage(role = "assistant", text = reply) }
-                },
-                onFailure = { error ->
-                    _messages.update {
-                        it + ChatMessage(
-                            role = "assistant",
-                            text = "Ошибка: ${error.message}",
-                            isError = true
-                        )
+            val systemPrompt = """
+                Respond only with valid JSON matching this schema:
+                {"answer": "string", "time": "string"}
+                - "answer": your response to the user's question
+                - "time": estimated time to implement or achieve what the user asked, e.g. "2 hours", "5 minutes"
+                Do not include any text outside the JSON object.
+            """.trimIndent()
+
+            val r1 = async { apiService.sendMessage(apiMessages, temperature = 0.7, topK = 300) }
+            val r2 = async { apiService.sendMessage(apiMessages, temperature = 0.7, topK = 300, maxTokens = 256) }
+            val r3 = async { apiService.sendMessage(apiMessages, systemPrompt, 0.7, 300, maxTokens = 256) }
+
+            listOf(
+                "Без ограничений" to r1.await(),
+                "Лимит токенов" to r2.await(),
+                "JSON + лимит токенов" to r3.await()
+            ).forEach { (label, result) ->
+                result.fold(
+                    onSuccess = { reply ->
+                        _messages.update { it + ChatMessage(role = "assistant", text = reply, label = label) }
+                    },
+                    onFailure = { error ->
+                        _messages.update {
+                            it + ChatMessage(
+                                role = "assistant",
+                                text = "Ошибка: ${error.message}",
+                                label = label,
+                                isError = true
+                            )
+                        }
                     }
-                }
-            )
+                )
+            }
 
             _isLoading.value = false
         }

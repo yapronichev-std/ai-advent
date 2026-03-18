@@ -154,14 +154,26 @@ fun MessageBubble(message: ChatMessage) {
                 )
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
-            Text(
-                text = message.text,
-                color = when {
-                    isUser -> MaterialTheme.colorScheme.onPrimary
-                    message.isError -> MaterialTheme.colorScheme.onErrorContainer
-                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+            Column {
+                if (!isUser && message.label != null) {
+                    Text(
+                        text = message.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = when {
+                            message.isError -> MaterialTheme.colorScheme.onErrorContainer
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }.copy(alpha = 0.6f)
+                    )
                 }
-            )
+                Text(
+                    text = message.text,
+                    color = when {
+                        isUser -> MaterialTheme.colorScheme.onPrimary
+                        message.isError -> MaterialTheme.colorScheme.onErrorContainer
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
+            }
         }
     }
 }

@@ -19,6 +19,7 @@ private data class ClaudeRequest(
     val model: String,
     @SerializedName("max_tokens") val maxTokens: Int,
     val messages: List<ApiMessage>,
+    val system: String? = null,
     val temperature: Double? = null,
     @SerializedName("top_p") val topP: Double? = null,
     @SerializedName("top_k") val topK: Int? = null
@@ -45,16 +46,19 @@ class ClaudeApiService {
 
     suspend fun sendMessage(
         messages: List<ApiMessage>,
+        system: String? = null,
         temperature: Double? = null,
         topK: Int? = null,
-        topP: Double? = null
+        topP: Double? = null,
+        maxTokens: Int = 1024
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
             val body = gson.toJson(
                 ClaudeRequest(
                     model = "claude-sonnet-4-6",
-                    maxTokens = 1024,
+                    maxTokens = maxTokens,
                     messages = messages,
+                    system = system,
                     temperature = temperature,
                     topP = topP,
                     topK = topK
