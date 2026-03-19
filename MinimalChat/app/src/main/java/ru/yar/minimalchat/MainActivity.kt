@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -23,12 +22,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -60,8 +59,6 @@ class MainActivity : ComponentActivity() {
 fun ChatScreen(chatViewModel: ChatViewModel = viewModel()) {
     val messages by chatViewModel.messages.collectAsState()
     val isLoading by chatViewModel.isLoading.collectAsState()
-    val collectedInfo by chatViewModel.collectedInfo.collectAsState()
-    val readyToPlan by chatViewModel.readyToPlan.collectAsState()
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
@@ -77,6 +74,16 @@ fun ChatScreen(chatViewModel: ChatViewModel = viewModel()) {
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
+            // Карточка с формулировкой задачи
+            TaskCard(
+                taskText = Constants.TASK_PROMPT,
+                isLoading = isLoading,
+                onSend = { chatViewModel.sendMessage(Constants.TASK_PROMPT) }
+            )
+
+            HorizontalDivider()
+
+            // История сообщений
             LazyColumn(
                 state = listState,
                 modifier = Modifier
@@ -103,23 +110,9 @@ fun ChatScreen(chatViewModel: ChatViewModel = viewModel()) {
                 }
             }
 
-            if (readyToPlan) {
-                HorizontalDivider()
-                CollectedInfoPanel(collectedInfo)
-                Button(
-                    onClick = { chatViewModel.sendMessage("Составь план тренировок на основе собранных данных.") },
-                    enabled = !isLoading,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.tertiary
-                    )
-                ) {
-                    Text("Составить план тренировок")
-                }
-            }
+            HorizontalDivider()
 
+            // Поле ввода дополнительного сообщения
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -130,7 +123,7 @@ fun ChatScreen(chatViewModel: ChatViewModel = viewModel()) {
                     value = inputText,
                     onValueChange = { inputText = it },
                     modifier = Modifier.weight(1f),
-                    placeholder = { Text("Введите сообщение...") },
+                    placeholder = { Text("Дополнительное сообщение...") },
                     maxLines = 4,
                     shape = RoundedCornerShape(16.dp)
                 )
@@ -150,43 +143,35 @@ fun ChatScreen(chatViewModel: ChatViewModel = viewModel()) {
 }
 
 @Composable
-fun CollectedInfoPanel(info: CollectedInfo) {
-    val fields = listOf(
-        "Уровень" to info.level,
-        "Опыт" to info.experience,
-        "Объём" to info.volume,
-        "Доступность" to info.availability,
-        "Цель" to info.goal,
-        "Событие" to info.event,
-        "FTP/ЧСС" to info.ftp,
-        "Ограничения" to info.limitations
-    ).filter { it.second != null }
-
-    Column(
+fun TaskCard(taskText: String, isLoading: Boolean, onSend: () -> Unit) {
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.tertiaryContainer)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        tonalElevation = 2.dp
     ) {
-        Text(
-            text = "Собранные данные",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onTertiaryContainer
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        fields.forEach { (key, value) ->
-            Row {
-                Text(
-                    text = "$key: ",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f)
-                )
-                Text(
-                    text = value!!,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onTertiaryContainer
-                )
+        Column(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "Задача",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.6f)
+            )
+            Text(
+                text = taskText,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+            Button(
+                onClick = onSend,
+                enabled = !isLoading,
+                modifier = Modifier.align(Alignment.End)
+            ) {
+                Text("Отправить задачу")
             }
         }
     }
@@ -219,26 +204,14 @@ fun MessageBubble(message: ChatMessage) {
                 )
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
-            Column {
-                if (!isUser && message.label != null) {
-                    Text(
-                        text = message.label,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = when {
-                            message.isError -> MaterialTheme.colorScheme.onErrorContainer
-                            else -> MaterialTheme.colorScheme.onSurfaceVariant
-                        }.copy(alpha = 0.6f)
-                    )
+            Text(
+                text = message.text,
+                color = when {
+                    isUser -> MaterialTheme.colorScheme.onPrimary
+                    message.isError -> MaterialTheme.colorScheme.onErrorContainer
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
                 }
-                Text(
-                    text = message.text,
-                    color = when {
-                        isUser -> MaterialTheme.colorScheme.onPrimary
-                        message.isError -> MaterialTheme.colorScheme.onErrorContainer
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-                )
-            }
+            )
         }
     }
 }
