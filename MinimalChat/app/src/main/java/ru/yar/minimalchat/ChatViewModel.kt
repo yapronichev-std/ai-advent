@@ -7,6 +7,8 @@ import com.google.gson.annotations.SerializedName
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
 
 data class ChatMessage(
@@ -50,21 +52,7 @@ class ChatViewModel : ViewModel() {
     private val _readyToPlan = MutableStateFlow(false)
     val readyToPlan: StateFlow<Boolean> = _readyToPlan
 
-    private val systemPrompt = """
-        You are an experienced cycling coach. Your goal is to gather information from the athlete to create a personalized training plan.
-
-        Conduct a structured interview, asking one or two questions at a time. Collect the following information:
-        - Current fitness level (beginner / intermediate / advanced)
-        - Cycling experience (years, disciplines: road, MTB, track, gravel)
-        - Current weekly volume (km or hours per week)
-        - Available training days per week and session duration
-        - Goal (weight loss, endurance, speed, race preparation, gran fondo, etc.)
-        - Target event or deadline (if any)
-        - Recent FTP or heart rate zones (if known)
-        - Any injuries or physical limitations
-
-        Once you have enough information, summarize what was collected and offer to generate the training plan.
-    """.trimIndent()
+    private val systemPrompt = """ """.trimIndent()
 
     fun sendMessage(text: String) {
         if (text.isBlank() || _isLoading.value) return
@@ -77,30 +65,39 @@ class ChatViewModel : ViewModel() {
                 .filter { !it.isError }
                 .map { ApiMessage(role = it.role, content = it.text) }
 
-            apiService.sendMessage(apiMessages, systemPrompt, 0.7, 300).fold(
-                onSuccess = { reply ->
-                    val coachResponse = runCatching {
-                        gson.fromJson(reply, CoachResponse::class.java)
-                    }.getOrNull()
+            val temperatures = listOf(0.0 to "t=0", 0.6 to "t=0.6", 1.0 to "t=1.0")
 
-                    if (coachResponse != null) {
-                        _collectedInfo.value = coachResponse.collected
-                        _readyToPlan.value = coachResponse.readyToPlan
-                        _messages.update { it + ChatMessage(role = "assistant", text = coachResponse.answer) }
-                    } else {
-                        _messages.update { it + ChatMessage(role = "assistant", text = reply) }
+            val results = temperatures.map { (temp, label) ->
+                async { Triple(temp, label, apiService.sendMessage(apiMessages, null, temp)) }
+            }.awaitAll()
+
+            for ((_, label, result) in results) {
+                result.fold(
+                    onSuccess = { reply ->
+                        val coachResponse = runCatching {
+                            gson.fromJson(reply, CoachResponse::class.java)
+                        }.getOrNull()
+
+                        if (coachResponse != null) {
+                            _collectedInfo.value = coachResponse.collected
+                            _readyToPlan.value = coachResponse.readyToPlan
+                            _messages.update { it + ChatMessage(role = "assistant", text = coachResponse.answer, label = label) }
+                        } else {
+                            _messages.update { it + ChatMessage(role = "assistant", text = reply, label = label) }
+                        }
+                    },
+                    onFailure = { error ->
+                        _messages.update {
+                            it + ChatMessage(
+                                role = "assistant",
+                                text = "Ошибка: ${error.message}",
+                                label = label,
+                                isError = true
+                            )
+                        }
                     }
-                },
-                onFailure = { error ->
-                    _messages.update {
-                        it + ChatMessage(
-                            role = "assistant",
-                            text = "Ошибка: ${error.message}",
-                            isError = true
-                        )
-                    }
-                }
-            )
+                )
+            }
 
             _isLoading.value = false
         }

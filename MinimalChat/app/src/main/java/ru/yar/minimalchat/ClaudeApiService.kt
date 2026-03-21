@@ -50,7 +50,7 @@ class ClaudeApiService {
         temperature: Double? = null,
         topK: Int? = null,
         topP: Double? = null,
-        maxTokens: Int = 1024
+        maxTokens: Int = 4096
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
             val body = gson.toJson(
