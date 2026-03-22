@@ -27,6 +27,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -62,6 +63,7 @@ fun ChatScreen(chatViewModel: ChatViewModel = viewModel()) {
     val isLoading by chatViewModel.isLoading.collectAsState()
     val collectedInfo by chatViewModel.collectedInfo.collectAsState()
     val readyToPlan by chatViewModel.readyToPlan.collectAsState()
+    val selectedProvider by chatViewModel.selectedProvider.collectAsState()
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
@@ -77,6 +79,12 @@ fun ChatScreen(chatViewModel: ChatViewModel = viewModel()) {
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
+            ProviderSelector(
+                selected = selectedProvider,
+                onSelect = { chatViewModel.setProvider(it) },
+                enabled = !isLoading
+            )
+            HorizontalDivider()
             LazyColumn(
                 state = listState,
                 modifier = Modifier
@@ -144,6 +152,41 @@ fun ChatScreen(chatViewModel: ChatViewModel = viewModel()) {
                 ) {
                     Text("→")
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun ProviderSelector(
+    selected: AiProvider,
+    onSelect: (AiProvider) -> Unit,
+    enabled: Boolean
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        AiProvider.entries.forEach { provider ->
+            val label = when (provider) {
+                AiProvider.CLAUDE -> "Claude"
+                AiProvider.GIGACHAT -> "GigaChat"
+            }
+            val isSelected = provider == selected
+            if (isSelected) {
+                Button(
+                    onClick = {},
+                    enabled = false,
+                    modifier = Modifier.weight(1f)
+                ) { Text(label) }
+            } else {
+                OutlinedButton(
+                    onClick = { onSelect(provider) },
+                    enabled = enabled,
+                    modifier = Modifier.weight(1f)
+                ) { Text(label) }
             }
         }
     }

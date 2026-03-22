@@ -9,6 +9,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
+enum class AiProvider { CLAUDE, GIGACHAT }
+
 data class ChatMessage(
     val role: String,
     val text: String,
@@ -35,8 +37,12 @@ private data class CoachResponse(
 
 class ChatViewModel : ViewModel() {
 
-    private val apiService = ClaudeApiService()
+    private val claudeService = ClaudeApiService()
+    private val gigaChatService = GigaChatApiService()
     private val gson = Gson()
+
+    private val _selectedProvider = MutableStateFlow(AiProvider.CLAUDE)
+    val selectedProvider: StateFlow<AiProvider> = _selectedProvider
 
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages
@@ -49,6 +55,14 @@ class ChatViewModel : ViewModel() {
 
     private val _readyToPlan = MutableStateFlow(false)
     val readyToPlan: StateFlow<Boolean> = _readyToPlan
+
+    fun setProvider(provider: AiProvider) {
+        if (_selectedProvider.value == provider) return
+        _selectedProvider.value = provider
+        _messages.value = emptyList()
+        _collectedInfo.value = CollectedInfo()
+        _readyToPlan.value = false
+    }
 
     private val systemPrompt = """
         You are an experienced cycling coach. Your goal is to gather information from the athlete to create a personalized training plan.
@@ -77,7 +91,11 @@ class ChatViewModel : ViewModel() {
                 .filter { !it.isError }
                 .map { ApiMessage(role = it.role, content = it.text) }
 
-            apiService.sendMessage(apiMessages, systemPrompt, 0.7, 300).fold(
+            val apiCall = when (_selectedProvider.value) {
+                AiProvider.CLAUDE -> claudeService.sendMessage(apiMessages, systemPrompt, 0.7, 300)
+                AiProvider.GIGACHAT -> gigaChatService.sendMessage(apiMessages, systemPrompt, 0.7, 300)
+            }
+            apiCall.fold(
                 onSuccess = { reply ->
                     val coachResponse = runCatching {
                         gson.fromJson(reply, CoachResponse::class.java)
