@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-enum class AiProvider { CLAUDE, GIGACHAT }
+enum class AiProvider { CLAUDE, GIGACHAT, OPENROUTER }
 
 data class ChatMessage(
     val role: String,
@@ -39,6 +39,7 @@ class ChatViewModel : ViewModel() {
 
     private val claudeService = ClaudeApiService()
     private val gigaChatService = GigaChatApiService()
+    private val openRouterService = OpenRouterApiService()
     private val gson = Gson()
 
     private val _selectedProvider = MutableStateFlow(AiProvider.CLAUDE)
@@ -64,21 +65,7 @@ class ChatViewModel : ViewModel() {
         _readyToPlan.value = false
     }
 
-    private val systemPrompt = """
-        You are an experienced cycling coach. Your goal is to gather information from the athlete to create a personalized training plan.
-
-        Conduct a structured interview, asking one or two questions at a time. Collect the following information:
-        - Current fitness level (beginner / intermediate / advanced)
-        - Cycling experience (years, disciplines: road, MTB, track, gravel)
-        - Current weekly volume (km or hours per week)
-        - Available training days per week and session duration
-        - Goal (weight loss, endurance, speed, race preparation, gran fondo, etc.)
-        - Target event or deadline (if any)
-        - Recent FTP or heart rate zones (if known)
-        - Any injuries or physical limitations
-
-        Once you have enough information, summarize what was collected and offer to generate the training plan.
-    """.trimIndent()
+    private val systemPrompt = """ """.trimIndent()
 
     fun sendMessage(text: String) {
         if (text.isBlank() || _isLoading.value) return
@@ -92,8 +79,9 @@ class ChatViewModel : ViewModel() {
                 .map { ApiMessage(role = it.role, content = it.text) }
 
             val apiCall = when (_selectedProvider.value) {
-                AiProvider.CLAUDE -> claudeService.sendMessage(apiMessages, systemPrompt, 0.7, 300)
-                AiProvider.GIGACHAT -> gigaChatService.sendMessage(apiMessages, systemPrompt, 0.7, 300)
+                AiProvider.CLAUDE -> claudeService.sendMessage(apiMessages, null, 0.7, 300)
+                AiProvider.GIGACHAT -> gigaChatService.sendMessage(apiMessages, null, 0.7, 300)
+                AiProvider.OPENROUTER -> openRouterService.sendMessage(apiMessages, null, 0.7, 300)
             }
             apiCall.fold(
                 onSuccess = { reply ->

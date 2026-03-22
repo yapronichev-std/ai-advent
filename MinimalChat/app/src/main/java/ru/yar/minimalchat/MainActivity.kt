@@ -173,6 +173,7 @@ fun ProviderSelector(
             val label = when (provider) {
                 AiProvider.CLAUDE -> "Claude"
                 AiProvider.GIGACHAT -> "GigaChat"
+                AiProvider.OPENROUTER -> "OpenRouter"
             }
             val isSelected = provider == selected
             if (isSelected) {
