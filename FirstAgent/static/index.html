@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat Agent</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="chat-container">
+        <header class="chat-header">
+            <h1>Chat Agent</h1>
+            <button id="clear-btn" title="Clear history">Clear</button>
+        </header>
+
+        <div class="messages" id="messages">
+            <div class="empty-state">Start a conversation...</div>
+        </div>
+
+        <form class="input-area" id="chat-form">
+            <textarea
+                id="input"
+                placeholder="Type a message..."
+                rows="1"
+                autofocus
+            ></textarea>
+            <button type="submit" id="send-btn">Send</button>
+        </form>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
