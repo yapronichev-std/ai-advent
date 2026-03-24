@@ -1,8 +1,11 @@
+import json
 import httpx
+from pathlib import Path
 from typing import Optional
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+HISTORY_FILE = Path("history.json")
 
 
 class ChatAgent:
@@ -10,7 +13,7 @@ class ChatAgent:
         self.api_key = api_key
         self.model = model
         self.system_prompt = system_prompt
-        self.history: list[dict] = []
+        self.history: list[dict] = self._load_history()
 
     async def send_message(self, user_message: str) -> str:
         self.history.append({"role": "user", "content": user_message})
@@ -19,6 +22,7 @@ class ChatAgent:
         response_text = await self._call_api(messages)
 
         self.history.append({"role": "assistant", "content": response_text})
+        self._save_history()
         return response_text
 
     def get_history(self) -> list[dict]:
@@ -26,6 +30,15 @@ class ChatAgent:
 
     def clear_history(self) -> None:
         self.history = []
+        self._save_history()
+
+    def _load_history(self) -> list[dict]:
+        if HISTORY_FILE.exists():
+            return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        return []
+
+    def _save_history(self) -> None:
+        HISTORY_FILE.write_text(json.dumps(self.history, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _build_messages(self) -> list[dict]:
         messages = []
