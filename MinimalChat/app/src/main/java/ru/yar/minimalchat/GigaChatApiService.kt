@@ -21,11 +21,16 @@ private data class GigaChatRequest(
     val model: String,
     val messages: List<ApiMessage>,
     val temperature: Double? = null,
-    @SerializedName("max_tokens") val maxTokens: Int = 1024
+    @SerializedName("max_tokens") val maxTokens: Int = 2048
+)
+
+private data class GigaChatUsage(
+    @SerializedName("completion_tokens") val completionTokens: Int?
 )
 
 private data class GigaChatResponse(
-    val choices: List<GigaChatChoice>
+    val choices: List<GigaChatChoice>,
+    val usage: GigaChatUsage?
 )
 
 private data class GigaChatChoice(
@@ -92,8 +97,8 @@ class GigaChatApiService {
         messages: List<ApiMessage>,
         system: String? = null,
         temperature: Double? = null,
-        maxTokens: Int = 1024
-    ): Result<String> = withContext(Dispatchers.IO) {
+        maxTokens: Int = 2048
+    ): Result<ApiResult> = withContext(Dispatchers.IO) {
         try {
             val token = getAccessToken()
 
@@ -129,14 +134,14 @@ class GigaChatApiService {
                 )
             }
 
-            val text = gson.fromJson(responseBody, GigaChatResponse::class.java)
-                .choices
+            val parsed = gson.fromJson(responseBody, GigaChatResponse::class.java)
+            val text = parsed.choices
                 .firstOrNull()
                 ?.message
                 ?.content
                 ?: return@withContext Result.failure(Exception("Нет текста в ответе GigaChat"))
 
-            Result.success(text)
+            Result.success(ApiResult(text = text, tokenCount = parsed.usage?.completionTokens))
         } catch (e: Exception) {
             Result.failure(e)
         }

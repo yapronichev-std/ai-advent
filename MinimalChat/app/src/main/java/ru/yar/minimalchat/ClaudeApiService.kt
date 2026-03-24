@@ -25,8 +25,13 @@ private data class ClaudeRequest(
     @SerializedName("top_k") val topK: Int? = null
 )
 
+private data class ClaudeUsage(
+    @SerializedName("output_tokens") val outputTokens: Int?
+)
+
 private data class ClaudeResponse(
-    val content: List<ContentBlock>
+    val content: List<ContentBlock>,
+    val usage: ClaudeUsage?
 )
 
 private data class ContentBlock(
@@ -50,8 +55,8 @@ class ClaudeApiService {
         temperature: Double? = null,
         topK: Int? = null,
         topP: Double? = null,
-        maxTokens: Int = 1024
-    ): Result<String> = withContext(Dispatchers.IO) {
+        maxTokens: Int = 2048
+    ): Result<ApiResult> = withContext(Dispatchers.IO) {
         try {
             val body = gson.toJson(
                 ClaudeRequest(
@@ -81,13 +86,13 @@ class ClaudeApiService {
                 return@withContext Result.failure(Exception("Ошибка API (${response.code}): $responseBody"))
             }
 
-            val text = gson.fromJson(responseBody, ClaudeResponse::class.java)
-                .content
+            val parsed = gson.fromJson(responseBody, ClaudeResponse::class.java)
+            val text = parsed.content
                 .firstOrNull { it.type == "text" }
                 ?.text
                 ?: return@withContext Result.failure(Exception("Нет текста в ответе"))
 
-            Result.success(text)
+            Result.success(ApiResult(text = text, tokenCount = parsed.usage?.outputTokens))
         } catch (e: Exception) {
             Result.failure(e)
         }

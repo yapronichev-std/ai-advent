@@ -282,6 +282,20 @@ fun MessageBubble(message: ChatMessage) {
                         else -> MaterialTheme.colorScheme.onSurfaceVariant
                     }
                 )
+                if (!isUser && (message.durationMs != null || message.tokenCount != null)) {
+                    val parts = buildList {
+                        message.durationMs?.let { add("${it / 1000.0}с") }
+                        message.tokenCount?.let { add("$it токенов") }
+                    }
+                    Text(
+                        text = parts.joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = when {
+                            message.isError -> MaterialTheme.colorScheme.onErrorContainer
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }.copy(alpha = 0.5f)
+                    )
+                }
             }
         }
     }

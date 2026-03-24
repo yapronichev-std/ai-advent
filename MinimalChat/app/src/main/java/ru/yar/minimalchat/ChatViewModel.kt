@@ -11,11 +11,18 @@ import kotlinx.coroutines.launch
 
 enum class AiProvider { CLAUDE, GIGACHAT, OPENROUTER }
 
+data class ApiResult(
+    val text: String,
+    val tokenCount: Int? = null
+)
+
 data class ChatMessage(
     val role: String,
     val text: String,
     val label: String? = null,
-    val isError: Boolean = false
+    val isError: Boolean = false,
+    val durationMs: Long? = null,
+    val tokenCount: Int? = null
 )
 
 data class CollectedInfo(
@@ -78,23 +85,40 @@ class ChatViewModel : ViewModel() {
                 .filter { !it.isError }
                 .map { ApiMessage(role = it.role, content = it.text) }
 
+            val startMs = System.currentTimeMillis()
             val apiCall = when (_selectedProvider.value) {
-                AiProvider.CLAUDE -> claudeService.sendMessage(apiMessages, null, 0.7, 300)
-                AiProvider.GIGACHAT -> gigaChatService.sendMessage(apiMessages, null, 0.7, 300)
-                AiProvider.OPENROUTER -> openRouterService.sendMessage(apiMessages, null, 0.7, 300)
+                AiProvider.CLAUDE -> claudeService.sendMessage(apiMessages)
+                AiProvider.GIGACHAT -> gigaChatService.sendMessage(apiMessages)
+                AiProvider.OPENROUTER -> openRouterService.sendMessage(apiMessages)
             }
+            val durationMs = System.currentTimeMillis() - startMs
+
             apiCall.fold(
-                onSuccess = { reply ->
+                onSuccess = { result ->
                     val coachResponse = runCatching {
-                        gson.fromJson(reply, CoachResponse::class.java)
+                        gson.fromJson(result.text, CoachResponse::class.java)
                     }.getOrNull()
 
                     if (coachResponse != null) {
                         _collectedInfo.value = coachResponse.collected
                         _readyToPlan.value = coachResponse.readyToPlan
-                        _messages.update { it + ChatMessage(role = "assistant", text = coachResponse.answer) }
+                        _messages.update {
+                            it + ChatMessage(
+                                role = "assistant",
+                                text = coachResponse.answer,
+                                durationMs = durationMs,
+                                tokenCount = result.tokenCount
+                            )
+                        }
                     } else {
-                        _messages.update { it + ChatMessage(role = "assistant", text = reply) }
+                        _messages.update {
+                            it + ChatMessage(
+                                role = "assistant",
+                                text = result.text,
+                                durationMs = durationMs,
+                                tokenCount = result.tokenCount
+                            )
+                        }
                     }
                 },
                 onFailure = { error ->
@@ -102,7 +126,8 @@ class ChatViewModel : ViewModel() {
                         it + ChatMessage(
                             role = "assistant",
                             text = "Ошибка: ${error.message}",
-                            isError = true
+                            isError = true,
+                            durationMs = durationMs
                         )
                     }
                 }

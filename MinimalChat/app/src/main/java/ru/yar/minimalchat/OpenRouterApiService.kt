@@ -14,11 +14,16 @@ private data class OpenRouterRequest(
     val model: String,
     val messages: List<ApiMessage>,
     val temperature: Double? = null,
-    @SerializedName("max_tokens") val maxTokens: Int = 1024
+    @SerializedName("max_tokens") val maxTokens: Int = 2048
+)
+
+private data class OpenRouterUsage(
+    @SerializedName("completion_tokens") val completionTokens: Int?
 )
 
 private data class OpenRouterResponse(
-    val choices: List<OpenRouterChoice>
+    val choices: List<OpenRouterChoice>,
+    val usage: OpenRouterUsage?
 )
 
 private data class OpenRouterChoice(
@@ -44,8 +49,8 @@ class OpenRouterApiService {
         messages: List<ApiMessage>,
         system: String? = null,
         temperature: Double? = null,
-        maxTokens: Int = 1024
-    ): Result<String> = withContext(Dispatchers.IO) {
+        maxTokens: Int = 2048
+    ): Result<ApiResult> = withContext(Dispatchers.IO) {
         try {
             val allMessages = if (system != null) {
                 listOf(ApiMessage(role = "system", content = system)) + messages
@@ -80,14 +85,14 @@ class OpenRouterApiService {
                 )
             }
 
-            val text = gson.fromJson(responseBody, OpenRouterResponse::class.java)
-                .choices
+            val parsed = gson.fromJson(responseBody, OpenRouterResponse::class.java)
+            val text = parsed.choices
                 .firstOrNull()
                 ?.message
                 ?.content
                 ?: return@withContext Result.failure(Exception("Нет текста в ответе OpenRouter"))
 
-            Result.success(text)
+            Result.success(ApiResult(text = text, tokenCount = parsed.usage?.completionTokens))
         } catch (e: Exception) {
             Result.failure(e)
         }
