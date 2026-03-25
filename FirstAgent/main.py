@@ -38,6 +38,7 @@ class MessageRequest(BaseModel):
 class MessageResponse(BaseModel):
     response: str
     history: list[dict]
+    usage: dict
 
 
 @app.get("/")
@@ -49,8 +50,8 @@ async def index():
 async def chat(request: MessageRequest):
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
-    response_text = await agent.send_message(request.text)
-    return MessageResponse(response=response_text, history=agent.get_history())
+    response_text, usage = await agent.send_message(request.text)
+    return MessageResponse(response=response_text, history=agent.get_history(), usage=usage)
 
 
 @app.get("/history")

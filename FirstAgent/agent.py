@@ -15,15 +15,15 @@ class ChatAgent:
         self.system_prompt = system_prompt
         self.history: list[dict] = self._load_history()
 
-    async def send_message(self, user_message: str) -> str:
+    async def send_message(self, user_message: str) -> tuple[str, dict]:
         self.history.append({"role": "user", "content": user_message})
 
         messages = self._build_messages()
-        response_text = await self._call_api(messages)
+        response_text, usage = await self._call_api(messages)
 
         self.history.append({"role": "assistant", "content": response_text})
         self._save_history()
-        return response_text
+        return response_text, usage
 
     def get_history(self) -> list[dict]:
         return self.history
@@ -47,7 +47,7 @@ class ChatAgent:
         messages.extend(self.history)
         return messages
 
-    async def _call_api(self, messages: list[dict]) -> str:
+    async def _call_api(self, messages: list[dict]) -> tuple[str, dict]:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -62,4 +62,6 @@ class ChatAgent:
             response = await response
             response.raise_for_status()
             data = response.json()
-            return data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"]["content"]
+            usage = data.get("usage", {})
+            return content, usage

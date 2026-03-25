@@ -106,6 +106,14 @@ body {
     border-bottom-left-radius: 4px;
 }
 
+.token-usage {
+    margin-top: 6px;
+    font-size: 11px;
+    color: #9ca3af;
+    font-style: normal;
+    white-space: nowrap;
+}
+
 .message.thinking {
     align-self: flex-start;
     background: #f3f4f6;

@@ -40,7 +40,13 @@ async function sendMessage(text) {
 
         const data = await res.json();
         thinking.remove();
-        appendMessage('assistant', data.response);
+        const msgEl = appendMessage('assistant', data.response);
+        if (data.usage && data.usage.total_tokens != null) {
+            const tokens = document.createElement('div');
+            tokens.className = 'token-usage';
+            tokens.textContent = `prompt: ${data.usage.prompt_tokens ?? '?'} · completion: ${data.usage.completion_tokens ?? '?'} · total: ${data.usage.total_tokens}`;
+            msgEl.appendChild(tokens);
+        }
     } catch (err) {
         thinking.remove();
         appendMessage('error', `Error: ${err.message}`);
