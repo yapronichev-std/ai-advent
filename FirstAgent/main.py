@@ -63,3 +63,14 @@ async def get_history():
 async def clear_history():
     agent.clear_history()
     return {"status": "ok"}
+
+
+@app.get("/tokens")
+async def get_tokens():
+    return agent.get_token_stats()
+
+
+@app.delete("/tokens")
+async def reset_tokens():
+    agent.reset_tokens()
+    return {"status": "ok"}

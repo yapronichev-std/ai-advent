@@ -13,6 +13,22 @@
             <button id="clear-btn" title="Clear history">Clear</button>
         </header>
 
+        <div class="token-panel" id="token-panel">
+            <div class="token-panel-row">
+                <span class="token-label">Tokens used</span>
+                <span class="token-counts">
+                    <span id="token-used">0</span> / <span id="token-limit">4,000</span>
+                </span>
+                <button id="reset-tokens-btn" title="Reset token counter">Reset</button>
+            </div>
+            <div class="token-bar-track">
+                <div class="token-bar-fill" id="token-bar-fill"></div>
+            </div>
+            <div class="token-warning" id="token-warning" hidden>
+                ⚠ Token usage exceeded 80% of limit
+            </div>
+        </div>
+
         <div class="messages" id="messages">
             <div class="empty-state">Start a conversation...</div>
         </div>

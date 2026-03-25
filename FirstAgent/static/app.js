@@ -3,6 +3,43 @@ const form = document.getElementById('chat-form');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send-btn');
 const clearBtn = document.getElementById('clear-btn');
+const tokenUsedEl = document.getElementById('token-used');
+const tokenLimitEl = document.getElementById('token-limit');
+const tokenBarFill = document.getElementById('token-bar-fill');
+const tokenWarning = document.getElementById('token-warning');
+const resetTokensBtn = document.getElementById('reset-tokens-btn');
+
+const WARNING_THRESHOLD = 0.8;
+
+function updateTokenDisplay(stats) {
+    const used = stats.total_tokens ?? 0;
+    const limit = stats.limit ?? 1_000_000;
+    const pct = limit > 0 ? Math.min(used / limit, 1) : 0;
+
+    tokenUsedEl.textContent = used.toLocaleString();
+    tokenLimitEl.textContent = limit.toLocaleString();
+    tokenBarFill.style.width = `${(pct * 100).toFixed(2)}%`;
+
+    tokenBarFill.className = 'token-bar-fill';
+    if (pct >= WARNING_THRESHOLD && pct < 1) tokenBarFill.classList.add('warn');
+    else if (pct >= 1) tokenBarFill.classList.add('danger');
+
+    tokenWarning.hidden = pct < WARNING_THRESHOLD;
+}
+
+async function loadTokenStats() {
+    try {
+        const res = await fetch('/tokens');
+        if (res.ok) updateTokenDisplay(await res.json());
+    } catch (_) {}
+}
+
+loadTokenStats();
+
+resetTokensBtn.addEventListener('click', async () => {
+    await fetch('/tokens', { method: 'DELETE' });
+    updateTokenDisplay({ total_tokens: 0, limit: 4_000 });
+});
 
 function appendMessage(role, text) {
     const emptyState = messagesEl.querySelector('.empty-state');
@@ -47,6 +84,7 @@ async function sendMessage(text) {
             tokens.textContent = `prompt: ${data.usage.prompt_tokens ?? '?'} · completion: ${data.usage.completion_tokens ?? '?'} · total: ${data.usage.total_tokens}`;
             msgEl.appendChild(tokens);
         }
+        await loadTokenStats();
     } catch (err) {
         thinking.remove();
         appendMessage('error', `Error: ${err.message}`);
