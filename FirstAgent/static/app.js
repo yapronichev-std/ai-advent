@@ -38,7 +38,7 @@ loadTokenStats();
 
 resetTokensBtn.addEventListener('click', async () => {
     await fetch('/tokens', { method: 'DELETE' });
-    updateTokenDisplay({ total_tokens: 0, limit: 4_000 });
+    updateTokenDisplay({ total_tokens: 0, limit: 1_000_000 });
 });
 
 function appendMessage(role, text) {
@@ -78,10 +78,15 @@ async function sendMessage(text) {
         const data = await res.json();
         thinking.remove();
         const msgEl = appendMessage('assistant', data.response);
-        if (data.usage && data.usage.total_tokens != null) {
+        if (data.usage) {
+            const u = data.usage;
             const tokens = document.createElement('div');
             tokens.className = 'token-usage';
-            tokens.textContent = `prompt: ${data.usage.prompt_tokens ?? '?'} · completion: ${data.usage.completion_tokens ?? '?'} · total: ${data.usage.total_tokens}`;
+            tokens.innerHTML =
+                `<span class="mu-prompt"><b>prompt:</b> ${u.prompt_tokens ?? '?'}</span>` +
+                ` · <span class="mu-completion"><b>completion:</b> ${u.completion_tokens ?? '?'}</span>` +
+                ` · <span class="mu-total"><b>total:</b> ${u.total_tokens ?? '?'}</span>` +
+                (u.response_time_ms != null ? ` · <span class="mu-time"><b>time:</b> ${(u.response_time_ms / 1000).toFixed(2)} s</span>` : '');
             msgEl.appendChild(tokens);
         }
         await loadTokenStats();

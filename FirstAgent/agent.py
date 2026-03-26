@@ -1,4 +1,5 @@
 import json
+import time
 import httpx
 from pathlib import Path
 from typing import Optional
@@ -7,7 +8,9 @@ from typing import Optional
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 HISTORY_FILE = Path("history.json")
 TOKENS_FILE = Path("tokens.json")
-DEFAULT_TOKEN_LIMIT = 4_000
+SUMMARY_FILE = Path("summary.json")
+DEFAULT_TOKEN_LIMIT = 1_000_000
+MAX_HISTORY = 10
 
 
 class ChatAgent:
@@ -17,14 +20,21 @@ class ChatAgent:
         self.system_prompt = system_prompt
         self.history: list[dict] = self._load_history()
         self.token_stats: dict = self._load_tokens()
+        self.summary: str = self._load_summary()
 
     async def send_message(self, user_message: str) -> tuple[str, dict]:
         self.history.append({"role": "user", "content": user_message})
 
         messages = self._build_messages()
+        t0 = time.monotonic()
         response_text, usage = await self._call_api(messages)
+        usage["response_time_ms"] = round((time.monotonic() - t0) * 1000)
 
         self.history.append({"role": "assistant", "content": response_text})
+
+        if len(self.history) > MAX_HISTORY:
+            await self._compress_history()
+
         self._save_history()
         self._accumulate_tokens(usage)
         return response_text, usage
@@ -32,9 +42,14 @@ class ChatAgent:
     def get_history(self) -> list[dict]:
         return self.history
 
+    def get_summary(self) -> str:
+        return self.summary
+
     def clear_history(self) -> None:
         self.history = []
+        self.summary = ""
         self._save_history()
+        self._save_summary()
 
     def get_token_stats(self) -> dict:
         return self.token_stats
@@ -52,6 +67,14 @@ class ChatAgent:
     def _save_history(self) -> None:
         HISTORY_FILE.write_text(json.dumps(self.history, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def _load_summary(self) -> str:
+        if SUMMARY_FILE.exists():
+            return json.loads(SUMMARY_FILE.read_text(encoding="utf-8")).get("summary", "")
+        return ""
+
+    def _save_summary(self) -> None:
+        SUMMARY_FILE.write_text(json.dumps({"summary": self.summary}, ensure_ascii=False, indent=2), encoding="utf-8")
+
     def _load_tokens(self) -> dict:
         if TOKENS_FILE.exists():
             data = json.loads(TOKENS_FILE.read_text(encoding="utf-8"))
@@ -68,10 +91,26 @@ class ChatAgent:
         self.token_stats["total_tokens"] += usage.get("total_tokens", 0)
         self._save_tokens()
 
+    async def _compress_history(self) -> None:
+        to_summarize = self.history[:-MAX_HISTORY]
+        self.history = self.history[-MAX_HISTORY:]
+
+        conversation_text = "\n".join(
+            f"{m['role'].upper()}: {m['content']}" for m in to_summarize
+        )
+        prompt = f"Summarize the following conversation fragment concisely, preserving key facts, decisions and context:\n\n{conversation_text}"
+        summary_messages = [{"role": "user", "content": prompt}]
+        new_summary, _ = await self._call_api(summary_messages)
+
+        self.summary = f"{self.summary}\n\n{new_summary}".strip() if self.summary else new_summary
+        self._save_summary()
+
     def _build_messages(self) -> list[dict]:
         messages = []
         if self.system_prompt:
             messages.append({"role": "system", "content": self.system_prompt})
+        if self.summary:
+            messages.append({"role": "system", "content": f"Summary of earlier conversation:\n{self.summary}"})
         messages.extend(self.history)
         return messages
 

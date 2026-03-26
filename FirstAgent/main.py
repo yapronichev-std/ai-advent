@@ -74,3 +74,8 @@ async def get_tokens():
 async def reset_tokens():
     agent.reset_tokens()
     return {"status": "ok"}
+
+
+@app.get("/summary")
+async def get_summary():
+    return {"summary": agent.get_summary()}

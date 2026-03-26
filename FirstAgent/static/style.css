@@ -185,11 +185,17 @@ body {
 
 .token-usage {
     margin-top: 6px;
-    font-size: 11px;
+    font-size: 13px;
+    font-family: "Courier New", Courier, monospace;
     color: #9ca3af;
     font-style: normal;
     white-space: nowrap;
 }
+
+.token-usage .mu-prompt     { color: #60a5fa !important; } /* blue   — prompt tokens     */
+.token-usage .mu-completion { color: #34d399 !important; } /* green  — completion tokens */
+.token-usage .mu-total      { color: #a78bfa !important; } /* violet — total tokens      */
+.token-usage .mu-time       { color: #fb923c !important; } /* orange — response time     */
 
 .message.thinking {
     align-self: flex-start;
