@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chat Agent</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=2">
 </head>
 <body>
     <div class="chat-container">
@@ -13,11 +13,12 @@
             <button id="clear-btn" title="Clear history">Clear</button>
         </header>
 
+        <!-- Token panel -->
         <div class="token-panel" id="token-panel">
             <div class="token-panel-row">
                 <span class="token-label">Tokens used</span>
                 <span class="token-counts">
-                    <span id="token-used">0</span> / <span id="token-limit">4,000</span>
+                    <span id="token-used">0</span> / <span id="token-limit">1,000,000</span>
                 </span>
                 <button id="reset-tokens-btn" title="Reset token counter">Reset</button>
             </div>
@@ -29,10 +30,57 @@
             </div>
         </div>
 
+        <!-- Strategy panel -->
+        <div class="strategy-panel">
+            <div class="strategy-row">
+                <span class="strategy-label">Strategy:</span>
+                <div class="strategy-buttons" id="strategy-buttons">
+                    <button class="strategy-btn" data-strategy="sliding_window">Sliding Window</button>
+                    <button class="strategy-btn" data-strategy="sticky_facts">Sticky Facts</button>
+                    <button class="strategy-btn" data-strategy="branching">Branching</button>
+                </div>
+            </div>
+
+            <!-- Sliding Window options -->
+            <div class="strategy-options" id="options-sliding_window" hidden>
+                <label class="option-label">
+                    Keep last
+                    <input type="number" id="window-size-input" value="10" min="1" max="200" class="number-input">
+                    messages
+                </label>
+            </div>
+
+            <!-- Sticky Facts options -->
+            <div class="strategy-options" id="options-sticky_facts" hidden>
+                <div class="facts-subrow">
+                    <label class="option-label">
+                        Window:
+                        <input type="number" id="window-size-sf-input" value="10" min="1" max="200" class="number-input">
+                        msgs
+                    </label>
+                    <button class="facts-toggle-btn" id="facts-toggle-btn">Facts ▾</button>
+                </div>
+                <div class="facts-panel" id="facts-panel">
+                    <p class="facts-empty" id="facts-empty">No facts extracted yet</p>
+                    <dl class="facts-list" id="facts-list"></dl>
+                </div>
+            </div>
+
+            <!-- Branching options -->
+            <div class="strategy-options" id="options-branching" hidden>
+                <div class="branch-toolbar">
+                    <button id="checkpoint-btn" class="checkpoint-btn">⎇ Save Checkpoint</button>
+                    <div class="branch-tabs" id="branch-tabs"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Messages -->
         <div class="messages" id="messages">
             <div class="empty-state">Start a conversation...</div>
         </div>
 
+        <!-- Input -->
         <form class="input-area" id="chat-form">
             <textarea
                 id="input"
@@ -44,6 +92,6 @@
         </form>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=2"></script>
 </body>
 </html>
