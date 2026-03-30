@@ -43,7 +43,7 @@ class ChatAgent:
         response_text, usage = await self._call_api(messages)
         usage["response_time_ms"] = round((time.monotonic() - t0) * 1000)
 
-        history.append({"role": "assistant", "content": response_text})
+        history.append({"role": "assistant", "content": response_text, "usage": usage})
         self._save_state()
         self._accumulate_tokens(usage)
         return response_text, usage
@@ -61,16 +61,11 @@ class ChatAgent:
         self._save_state()
 
     def get_token_stats(self) -> dict:
-        return self.token_stats
+        stats = self.token_stats.get(self.strategy.value, self._empty_stats())
+        return {**stats, "limit": self.token_stats.get("limit", DEFAULT_TOKEN_LIMIT)}
 
     def reset_tokens(self) -> None:
-        limit = self.token_stats.get("limit", DEFAULT_TOKEN_LIMIT)
-        self.token_stats = {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "limit": limit,
-        }
+        self.token_stats[self.strategy.value] = self._empty_stats()
         self._save_tokens()
 
     def set_strategy(self, strategy: ContextStrategy, window_size: Optional[int] = None) -> None:
@@ -257,17 +252,24 @@ class ChatAgent:
         }
         STATE_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    @staticmethod
+    def _empty_stats() -> dict:
+        return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
     def _load_tokens(self) -> dict:
+        default = {
+            "limit": DEFAULT_TOKEN_LIMIT,
+            **{s.value: self._empty_stats() for s in ContextStrategy},
+        }
         if TOKENS_FILE.exists():
             data = json.loads(TOKENS_FILE.read_text(encoding="utf-8"))
-            data.setdefault("limit", DEFAULT_TOKEN_LIMIT)
-            return data
-        return {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "limit": DEFAULT_TOKEN_LIMIT,
-        }
+            # migrate from old flat format
+            if "total_tokens" in data:
+                default["limit"] = data.get("limit", DEFAULT_TOKEN_LIMIT)
+                return default
+            default.update(data)
+            return default
+        return default
 
     def _save_tokens(self) -> None:
         TOKENS_FILE.write_text(
@@ -275,7 +277,8 @@ class ChatAgent:
         )
 
     def _accumulate_tokens(self, usage: dict) -> None:
-        self.token_stats["prompt_tokens"] += usage.get("prompt_tokens", 0)
-        self.token_stats["completion_tokens"] += usage.get("completion_tokens", 0)
-        self.token_stats["total_tokens"] += usage.get("total_tokens", 0)
+        stats = self.token_stats.setdefault(self.strategy.value, self._empty_stats())
+        stats["prompt_tokens"] += usage.get("prompt_tokens", 0)
+        stats["completion_tokens"] += usage.get("completion_tokens", 0)
+        stats["total_tokens"] += usage.get("total_tokens", 0)
         self._save_tokens()

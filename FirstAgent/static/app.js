@@ -89,7 +89,7 @@ async function applyStrategy(strategy, windowSize) {
             currentStrategy = data.strategy;
             activateStrategyBtn(currentStrategy);
             showStrategyOptions(currentStrategy);
-            await reloadMessages();
+            await Promise.all([reloadMessages(), loadTokenStats()]);
             if (currentStrategy === 'branching') await loadBranches();
             if (currentStrategy === 'sticky_facts') await loadFacts();
         }
@@ -209,14 +209,28 @@ async function switchBranch(branchId) {
 
 // ── Messages ───────────────────────────────────────────────────────────────
 
-function appendMessage(role, text) {
+function appendMessage(role, text, usage) {
     const emptyState = messagesEl.querySelector('.empty-state');
     if (emptyState) emptyState.remove();
     const el       = document.createElement('div');
     el.className   = `message ${role}`;
     el.textContent = text;
+    if (usage && role === 'assistant') el.appendChild(buildUsageEl(usage));
     messagesEl.appendChild(el);
     messagesEl.scrollTop = messagesEl.scrollHeight;
+    return el;
+}
+
+function buildUsageEl(u) {
+    const el = document.createElement('div');
+    el.className = 'token-usage';
+    el.innerHTML =
+        `<span class="mu-prompt"><b>prompt:</b> ${u.prompt_tokens ?? '?'}</span>` +
+        ` · <span class="mu-completion"><b>completion:</b> ${u.completion_tokens ?? '?'}</span>` +
+        ` · <span class="mu-total"><b>total:</b> ${u.total_tokens ?? '?'}</span>` +
+        (u.response_time_ms != null
+            ? ` · <span class="mu-time"><b>time:</b> ${(u.response_time_ms / 1000).toFixed(2)} s</span>`
+            : '');
     return el;
 }
 
@@ -226,7 +240,7 @@ function renderHistory(history) {
         messagesEl.innerHTML = '<div class="empty-state">Start a conversation...</div>';
         return;
     }
-    history.forEach(msg => appendMessage(msg.role, msg.content));
+    history.forEach(msg => appendMessage(msg.role, msg.content, msg.usage));
 }
 
 async function reloadMessages() {
@@ -260,21 +274,7 @@ async function sendMessage(text) {
 
         const data  = await res.json();
         thinking.remove();
-        const msgEl = appendMessage('assistant', data.response);
-
-        if (data.usage) {
-            const u      = data.usage;
-            const tokens = document.createElement('div');
-            tokens.className = 'token-usage';
-            tokens.innerHTML =
-                `<span class="mu-prompt"><b>prompt:</b> ${u.prompt_tokens ?? '?'}</span>` +
-                ` · <span class="mu-completion"><b>completion:</b> ${u.completion_tokens ?? '?'}</span>` +
-                ` · <span class="mu-total"><b>total:</b> ${u.total_tokens ?? '?'}</span>` +
-                (u.response_time_ms != null
-                    ? ` · <span class="mu-time"><b>time:</b> ${(u.response_time_ms / 1000).toFixed(2)} s</span>`
-                    : '');
-            msgEl.appendChild(tokens);
-        }
+        appendMessage('assistant', data.response, data.usage);
 
         await loadTokenStats();
 
