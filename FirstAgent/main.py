@@ -12,7 +12,7 @@ from agent import ChatAgent, ContextStrategy
 
 load_dotenv()
 
-MODEL = "arcee-ai/trinity-large-preview:free"
+MODEL = "arcee-ai/trinity-mini:free"
 SYSTEM_PROMPT = "You are a helpful assistant. Answer clearly and concisely."
 
 agent: ChatAgent
