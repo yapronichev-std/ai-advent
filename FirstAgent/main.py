@@ -1,5 +1,6 @@
 import os
 from contextlib import asynccontextmanager
+from typing import Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -79,3 +80,87 @@ async def reset_tokens():
 @app.get("/summary")
 async def get_summary():
     return {"summary": agent.get_summary()}
+
+
+@app.get("/memory/short-term")
+async def get_short_term_memory():
+    history = agent.get_history()
+    return {
+        "message_count": len(history),
+        "max_history": 10,
+        "summary": agent.get_summary(),
+    }
+
+
+# ── Memory endpoints ────────────────────────────────────────────────────────
+
+LongTermCategory = Literal["profile", "decisions", "knowledge"]
+
+
+class TaskRequest(BaseModel):
+    description: str
+
+
+class FactRequest(BaseModel):
+    key: str
+    value: str
+
+
+class LongTermRequest(BaseModel):
+    key: str
+    value: str
+
+
+@app.get("/memory")
+async def get_memory():
+    return agent.memory.snapshot()
+
+
+@app.get("/memory/working")
+async def get_working_memory():
+    return agent.memory.get_working()
+
+
+@app.post("/memory/working/task")
+async def set_task(request: TaskRequest):
+    agent.memory.set_task(request.description)
+    return {"status": "ok", "task": request.description}
+
+
+@app.post("/memory/working/fact")
+async def add_working_fact(request: FactRequest):
+    agent.memory.add_working_fact(request.key, request.value)
+    return {"status": "ok", "key": request.key}
+
+
+@app.delete("/memory/working/fact/{key}")
+async def delete_working_fact(key: str):
+    deleted = agent.memory.delete_working_fact(key)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Fact '{key}' not found")
+    return {"status": "ok", "key": key}
+
+
+@app.delete("/memory/working")
+async def clear_working_memory():
+    agent.memory.clear_working()
+    return {"status": "ok"}
+
+
+@app.get("/memory/long-term/{category}")
+async def get_long_term(category: LongTermCategory):
+    return {"category": category, "entries": agent.memory.get_long_term(category)}
+
+
+@app.post("/memory/long-term/{category}")
+async def add_long_term(category: LongTermCategory, request: LongTermRequest):
+    agent.memory.add_long_term(category, request.key, request.value)
+    return {"status": "ok", "category": category, "key": request.key}
+
+
+@app.delete("/memory/long-term/{category}/{key}")
+async def delete_long_term(category: LongTermCategory, key: str):
+    deleted = agent.memory.delete_long_term(category, key)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Key '{key}' not found in {category}")
+    return {"status": "ok", "category": category, "key": key}
