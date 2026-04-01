@@ -13,8 +13,19 @@
         <div class="chat-container">
             <header class="chat-header">
                 <h1>Chat Agent</h1>
+                <div class="user-bar">
+                    <span class="user-label">User</span>
+                    <select id="user-select"></select>
+                    <button id="user-add-btn" title="New user">+</button>
+                    <button id="user-del-btn" title="Delete user">×</button>
+                </div>
                 <button id="clear-btn" title="Clear history">Clear</button>
             </header>
+            <div class="user-new-row" id="user-new-row" hidden>
+                <input id="user-new-input" placeholder="Enter user id…" autocomplete="off">
+                <button id="user-new-confirm">Create</button>
+                <button id="user-new-cancel">Cancel</button>
+            </div>
 
             <div class="token-panel" id="token-panel">
                 <div class="token-panel-row">

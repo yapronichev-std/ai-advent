@@ -596,3 +596,108 @@ body {
     color: #2563eb;
     box-shadow: 0 1px 3px rgba(0,0,0,0.08);
 }
+
+/* ── User selector ── */
+.chat-header {
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.user-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 1;
+    justify-content: flex-end;
+}
+
+.user-label {
+    font-size: 12px;
+    color: #9ca3af;
+    flex-shrink: 0;
+}
+
+#user-select {
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 13px;
+    font-family: inherit;
+    color: #374151;
+    background: #fff;
+    cursor: pointer;
+    outline: none;
+    max-width: 130px;
+    transition: border-color 0.15s;
+}
+
+#user-select:focus { border-color: #2563eb; }
+
+#user-add-btn,
+#user-del-btn {
+    background: none;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    width: 26px;
+    height: 26px;
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    color: #6b7280;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.15s;
+}
+
+#user-add-btn:hover { background: #f0fdf4; color: #16a34a; border-color: #86efac; }
+#user-del-btn:hover { background: #fef2f2; color: #dc2626; border-color: #fca5a5; }
+
+.user-new-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 20px;
+    border-bottom: 1px solid #e5e7eb;
+    background: #f9fafb;
+}
+
+#user-new-input {
+    flex: 1;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+#user-new-input:focus { border-color: #2563eb; }
+
+#user-new-confirm,
+#user-new-cancel {
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 5px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+
+#user-new-confirm {
+    background: #2563eb;
+    color: #fff;
+    border-color: #2563eb;
+}
+
+#user-new-confirm:hover { background: #1d4ed8; }
+
+#user-new-cancel {
+    background: none;
+    color: #6b7280;
+}
+
+#user-new-cancel:hover { background: #f3f4f6; }

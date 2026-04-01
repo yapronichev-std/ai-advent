@@ -1,3 +1,6 @@
+// ── State ───────────────────────────────────────────────────────────────────
+let currentUserId = 'default';
+
 // ── Chat elements ──────────────────────────────────────────────────────────
 const messagesEl       = document.getElementById('messages');
 const form             = document.getElementById('chat-form');
@@ -9,6 +12,15 @@ const tokenLimitEl     = document.getElementById('token-limit');
 const tokenBarFill     = document.getElementById('token-bar-fill');
 const tokenWarning     = document.getElementById('token-warning');
 const resetTokensBtn   = document.getElementById('reset-tokens-btn');
+
+// ── User selector elements ─────────────────────────────────────────────────
+const userSelect       = document.getElementById('user-select');
+const userAddBtn       = document.getElementById('user-add-btn');
+const userDelBtn       = document.getElementById('user-del-btn');
+const userNewRow       = document.getElementById('user-new-row');
+const userNewInput     = document.getElementById('user-new-input');
+const userNewConfirm   = document.getElementById('user-new-confirm');
+const userNewCancel    = document.getElementById('user-new-cancel');
 
 // ── Memory elements ────────────────────────────────────────────────────────
 const refreshMemBtn    = document.getElementById('refresh-memory-btn');
@@ -30,8 +42,78 @@ const memAddLtBtn      = document.getElementById('mem-add-lt-btn');
 const memTabs          = document.querySelectorAll('.mem-tab');
 
 let currentLtCategory = 'profile';
-
 const WARNING_THRESHOLD = 0.8;
+
+// ── User management ─────────────────────────────────────────────────────────
+
+async function loadUsers() {
+    try {
+        const res = await fetch('/users');
+        if (!res.ok) return;
+        const { users } = await res.json();
+
+        userSelect.innerHTML = '';
+        const all = users.includes('default') ? users : ['default', ...users];
+        all.forEach(uid => {
+            const opt = document.createElement('option');
+            opt.value = uid;
+            opt.textContent = uid;
+            if (uid === currentUserId) opt.selected = true;
+            userSelect.appendChild(opt);
+        });
+        // Ensure current user exists in list (edge case after creation)
+        if (!all.includes(currentUserId)) {
+            const opt = document.createElement('option');
+            opt.value = currentUserId;
+            opt.textContent = currentUserId;
+            opt.selected = true;
+            userSelect.appendChild(opt);
+        }
+    } catch (_) {}
+}
+
+async function switchUser(uid) {
+    currentUserId = uid;
+    messagesEl.innerHTML = '<div class="empty-state">Start a conversation...</div>';
+    await Promise.all([loadTokenStats(), loadMemory(), loadShortTerm()]);
+}
+
+userSelect.addEventListener('change', () => switchUser(userSelect.value));
+
+userAddBtn.addEventListener('click', () => {
+    userNewRow.hidden = false;
+    userNewInput.focus();
+});
+
+userNewCancel.addEventListener('click', () => {
+    userNewRow.hidden = true;
+    userNewInput.value = '';
+});
+
+async function createUser() {
+    const uid = userNewInput.value.trim().replace(/\s+/g, '_');
+    if (!uid) return;
+    userNewRow.hidden = true;
+    userNewInput.value = '';
+    currentUserId = uid;
+    await loadUsers();
+    await switchUser(uid);
+}
+
+userNewConfirm.addEventListener('click', createUser);
+userNewInput.addEventListener('keydown', e => { if (e.key === 'Enter') createUser(); });
+
+userDelBtn.addEventListener('click', async () => {
+    if (currentUserId === 'default') {
+        alert('Cannot delete the default user.');
+        return;
+    }
+    if (!confirm(`Delete user "${currentUserId}" and all their data?`)) return;
+    await fetch(`/users/${encodeURIComponent(currentUserId)}`, { method: 'DELETE' });
+    currentUserId = 'default';
+    await loadUsers();
+    await switchUser('default');
+});
 
 // ── Token panel ────────────────────────────────────────────────────────────
 function updateTokenDisplay(stats) {
@@ -52,7 +134,7 @@ function updateTokenDisplay(stats) {
 
 async function loadTokenStats() {
     try {
-        const res = await fetch('/tokens');
+        const res = await fetch(`/tokens?user_id=${encodeURIComponent(currentUserId)}`);
         if (res.ok) updateTokenDisplay(await res.json());
     } catch (_) {}
 }
@@ -60,7 +142,7 @@ async function loadTokenStats() {
 loadTokenStats();
 
 resetTokensBtn.addEventListener('click', async () => {
-    await fetch('/tokens', { method: 'DELETE' });
+    await fetch(`/tokens?user_id=${encodeURIComponent(currentUserId)}`, { method: 'DELETE' });
     updateTokenDisplay({ total_tokens: 0, limit: 1_000_000 });
 });
 
@@ -91,7 +173,7 @@ async function sendMessage(text) {
         const res = await fetch('/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text }),
+            body: JSON.stringify({ text, user_id: currentUserId }),
         });
 
         if (!res.ok) {
@@ -149,7 +231,7 @@ input.addEventListener('input', () => {
 });
 
 clearBtn.addEventListener('click', async () => {
-    await fetch('/history', { method: 'DELETE' });
+    await fetch(`/history?user_id=${encodeURIComponent(currentUserId)}`, { method: 'DELETE' });
     messagesEl.innerHTML = '<div class="empty-state">Start a conversation...</div>';
     await loadShortTerm();
 });
@@ -216,7 +298,7 @@ function renderLongTermMemory(entries) {
 
 async function loadMemory() {
     try {
-        const res = await fetch('/memory');
+        const res = await fetch(`/memory?user_id=${encodeURIComponent(currentUserId)}`);
         if (!res.ok) return;
         const data = await res.json();
         renderWorkingMemory(data.working);
@@ -224,10 +306,9 @@ async function loadMemory() {
     } catch (_) {}
 }
 
-// Short-term memory
 async function loadShortTerm() {
     try {
-        const res = await fetch('/memory/short-term');
+        const res = await fetch(`/memory/short-term?user_id=${encodeURIComponent(currentUserId)}`);
         if (!res.ok) return;
         const { message_count, max_history, summary } = await res.json();
 
@@ -250,6 +331,7 @@ async function loadShortTerm() {
     } catch (_) {}
 }
 
+loadUsers();
 loadMemory();
 loadShortTerm();
 refreshMemBtn.addEventListener('click', () => { loadMemory(); loadShortTerm(); });
@@ -269,7 +351,7 @@ memTaskInput.addEventListener('keydown', async (e) => {
     if (e.key !== 'Enter') return;
     const desc = memTaskInput.value.trim();
     if (!desc) return;
-    await fetch('/memory/working/task', {
+    await fetch(`/memory/working/task?user_id=${encodeURIComponent(currentUserId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ description: desc }),
@@ -280,7 +362,7 @@ memTaskInput.addEventListener('keydown', async (e) => {
 
 // Complete task
 memTaskDoneBtn.addEventListener('click', async () => {
-    await fetch('/memory/working', { method: 'DELETE' });
+    await fetch(`/memory/working?user_id=${encodeURIComponent(currentUserId)}`, { method: 'DELETE' });
     await loadMemory();
 });
 
@@ -289,7 +371,7 @@ memAddFactBtn.addEventListener('click', async () => {
     const key = memFactKey.value.trim();
     const val = memFactVal.value.trim();
     if (!key || !val) return;
-    await fetch('/memory/working/fact', {
+    await fetch(`/memory/working/fact?user_id=${encodeURIComponent(currentUserId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ key, value: val }),
@@ -304,7 +386,7 @@ memAddLtBtn.addEventListener('click', async () => {
     const key = memLtKey.value.trim();
     const val = memLtVal.value.trim();
     if (!key || !val) return;
-    await fetch(`/memory/long-term/${currentLtCategory}`, {
+    await fetch(`/memory/long-term/${currentLtCategory}?user_id=${encodeURIComponent(currentUserId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ key, value: val }),
@@ -316,12 +398,17 @@ memAddLtBtn.addEventListener('click', async () => {
 
 // API helpers
 async function apiDeleteWorkingFact(key) {
-    await fetch(`/memory/working/fact/${encodeURIComponent(key)}`, { method: 'DELETE' });
+    await fetch(
+        `/memory/working/fact/${encodeURIComponent(key)}?user_id=${encodeURIComponent(currentUserId)}`,
+        { method: 'DELETE' }
+    );
 }
 
 async function apiDeleteLtEntry(category, key) {
-    const encodedKey = encodeURIComponent(key);
-    await fetch(`/memory/long-term/${category}/${encodedKey}`, { method: 'DELETE' });
+    await fetch(
+        `/memory/long-term/${category}/${encodeURIComponent(key)}?user_id=${encodeURIComponent(currentUserId)}`,
+        { method: 'DELETE' }
+    );
 }
 
 function escHtml(str) {
