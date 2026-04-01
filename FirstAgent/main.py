@@ -9,12 +9,12 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from agent import ChatAgent
+from config import load_system_prompt, save_system_prompt
 from profiles import UserProfileManager
 
 load_dotenv()
 
 MODEL = "arcee-ai/trinity-large-preview:free"
-SYSTEM_PROMPT = "You are a helpful assistant. Answer clearly and concisely."
 
 api_key: str
 agents: dict[str, ChatAgent] = {}
@@ -23,7 +23,7 @@ profile_manager = UserProfileManager()
 
 def get_agent(user_id: str) -> ChatAgent:
     if user_id not in agents:
-        agents[user_id] = ChatAgent(api_key=api_key, model=MODEL, system_prompt=SYSTEM_PROMPT, user_id=user_id)
+        agents[user_id] = ChatAgent(api_key=api_key, model=MODEL, user_id=user_id)
     return agents[user_id]
 
 
@@ -62,6 +62,10 @@ class FactRequest(BaseModel):
 class LongTermRequest(BaseModel):
     key: str
     value: str
+
+
+class SystemPromptRequest(BaseModel):
+    prompt: str
 
 
 class TaskRequest(BaseModel):
@@ -210,9 +214,21 @@ async def get_user_profile(user_id: str):
 async def delete_user(user_id: str):
     if user_id == "default":
         raise HTTPException(status_code=400, detail="Cannot delete the default user")
-    # Выгружаем агента из кеша если он был загружен
     agents.pop(user_id, None)
     deleted = profile_manager.delete_user(user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"User '{user_id}' not found")
     return {"status": "ok", "user_id": user_id}
+
+
+# ── System prompt ────────────────────────────────────────────────────────────
+
+@app.get("/system-prompt")
+async def get_system_prompt():
+    return {"prompt": load_system_prompt()}
+
+
+@app.put("/system-prompt")
+async def update_system_prompt(request: SystemPromptRequest):
+    save_system_prompt(request.prompt)
+    return {"status": "ok", "prompt": request.prompt}

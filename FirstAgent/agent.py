@@ -4,6 +4,7 @@ import httpx
 from pathlib import Path
 from typing import Optional
 
+from config import load_system_prompt
 from memory import MemoryStore
 
 
@@ -16,10 +17,9 @@ _BEHAVIOUR_KEYS = {"name", "language", "response_style"}
 
 
 class ChatAgent:
-    def __init__(self, api_key: str, model: str, system_prompt: Optional[str] = None, user_id: str = "default"):
+    def __init__(self, api_key: str, model: str, user_id: str = "default"):
         self.api_key = api_key
         self.model = model
-        self.base_system_prompt = system_prompt
         self.user_id = user_id
 
         user_dir = Path("memory") / "users" / user_id
@@ -79,13 +79,12 @@ class ChatAgent:
     # ── Персонализация ────────────────────────────────────────────────────
 
     def _build_system_prompt(self) -> str:
-        """Дополняет базовый промпт поведенческими инструкциями из профиля пользователя."""
-        if not self.base_system_prompt:
-            return ""
+        """Читает глобальный промпт из файла и дополняет поведенческими инструкциями из профиля."""
+        base = load_system_prompt()
 
         profile = {e["key"]: e["value"] for e in self.memory.get_long_term("profile")}
         if not profile:
-            return self.base_system_prompt
+            return base
 
         additions: list[str] = []
         if name := profile.get("name"):
@@ -96,8 +95,8 @@ class ChatAgent:
             additions.append(f"Response style: {style}.")
 
         if additions:
-            return self.base_system_prompt + "\n\n" + " ".join(additions)
-        return self.base_system_prompt
+            return base + "\n\n" + " ".join(additions)
+        return base
 
     # ── Построение сообщений ──────────────────────────────────────────────
 

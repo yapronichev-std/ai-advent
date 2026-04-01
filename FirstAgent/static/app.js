@@ -13,6 +13,11 @@ const tokenBarFill     = document.getElementById('token-bar-fill');
 const tokenWarning     = document.getElementById('token-warning');
 const resetTokensBtn   = document.getElementById('reset-tokens-btn');
 
+// ── System prompt elements ─────────────────────────────────────────────────
+const syspromptInput   = document.getElementById('sysprompt-input');
+const syspromptSaveBtn = document.getElementById('sysprompt-save-btn');
+const syspromptStatus  = document.getElementById('sysprompt-status');
+
 // ── User selector elements ─────────────────────────────────────────────────
 const userSelect       = document.getElementById('user-select');
 const userAddBtn       = document.getElementById('user-add-btn');
@@ -114,6 +119,35 @@ userDelBtn.addEventListener('click', async () => {
     await loadUsers();
     await switchUser('default');
 });
+
+// ── System prompt ──────────────────────────────────────────────────────────
+
+async function loadSystemPrompt() {
+    try {
+        const res = await fetch('/system-prompt');
+        if (res.ok) {
+            const { prompt } = await res.json();
+            syspromptInput.value = prompt;
+        }
+    } catch (_) {}
+}
+
+syspromptSaveBtn.addEventListener('click', async () => {
+    const prompt = syspromptInput.value;
+    try {
+        const res = await fetch('/system-prompt', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt }),
+        });
+        if (res.ok) {
+            syspromptStatus.textContent = 'Saved';
+            setTimeout(() => { syspromptStatus.textContent = ''; }, 2000);
+        }
+    } catch (_) {}
+});
+
+loadSystemPrompt();
 
 // ── Token panel ────────────────────────────────────────────────────────────
 function updateTokenDisplay(stats) {
