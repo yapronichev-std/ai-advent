@@ -4,21 +4,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 MEMORY_DIR = Path("memory")
-WORKING_DIR = MEMORY_DIR / "working"
-LONG_TERM_DIR = MEMORY_DIR / "long_term"
-
-TASK_FILE = WORKING_DIR / "current_task.json"
-PROFILE_FILE = LONG_TERM_DIR / "profile.json"
-DECISIONS_FILE = LONG_TERM_DIR / "decisions.json"
-KNOWLEDGE_FILE = LONG_TERM_DIR / "knowledge.json"
 
 LongTermCategory = Literal["profile", "decisions", "knowledge"]
-
-_CATEGORY_FILES: dict[LongTermCategory, Path] = {
-    "profile": PROFILE_FILE,
-    "decisions": DECISIONS_FILE,
-    "knowledge": KNOWLEDGE_FILE,
-}
 
 
 def _now() -> str:
@@ -39,49 +26,60 @@ def _save(path: Path, data: Any) -> None:
 class MemoryStore:
     """Three-level memory: short-term (history), working, long-term."""
 
+    def __init__(self, user_id: str = "default"):
+        self.user_id = user_id
+        user_dir = MEMORY_DIR / "users" / user_id
+        working_dir = user_dir / "working"
+        long_term_dir = user_dir / "long_term"
+
+        self._task_file = working_dir / "current_task.json"
+        self._category_files: dict[LongTermCategory, Path] = {
+            "profile": long_term_dir / "profile.json",
+            "decisions": long_term_dir / "decisions.json",
+            "knowledge": long_term_dir / "knowledge.json",
+        }
+
     # ── Working memory ──────────────────────────────────────────────────
 
     def get_working(self) -> dict:
-        return _load(TASK_FILE, {"task": None, "facts": [], "started_at": None})
+        return _load(self._task_file, {"task": None, "facts": [], "started_at": None})
 
     def set_task(self, description: str) -> None:
-        data = {"task": description, "facts": [], "started_at": _now()}
-        _save(TASK_FILE, data)
+        _save(self._task_file, {"task": description, "facts": [], "started_at": _now()})
 
     def add_working_fact(self, key: str, value: str) -> None:
         data = self.get_working()
         data["facts"] = [f for f in data["facts"] if f["key"] != key]
         data["facts"].append({"key": key, "value": value, "saved_at": _now()})
-        _save(TASK_FILE, data)
+        _save(self._task_file, data)
 
     def delete_working_fact(self, key: str) -> bool:
         data = self.get_working()
         before = len(data["facts"])
         data["facts"] = [f for f in data["facts"] if f["key"] != key]
         if len(data["facts"]) < before:
-            _save(TASK_FILE, data)
+            _save(self._task_file, data)
             return True
         return False
 
     def clear_working(self) -> None:
-        _save(TASK_FILE, {"task": None, "facts": [], "started_at": None})
+        _save(self._task_file, {"task": None, "facts": [], "started_at": None})
 
     # ── Long-term memory ─────────────────────────────────────────────────
 
     def get_long_term(self, category: LongTermCategory) -> list[dict]:
-        path = _CATEGORY_FILES[category]
-        data = _load(path, {"entries": []})
+        data = _load(self._category_files[category], {"entries": []})
         return data["entries"]
 
     def add_long_term(self, category: LongTermCategory, key: str, value: str) -> None:
-        path = _CATEGORY_FILES[category]
+        path = self._category_files[category]
         data = _load(path, {"entries": []})
         data["entries"] = [e for e in data["entries"] if e["key"] != key]
         data["entries"].append({"key": key, "value": value, "saved_at": _now()})
         _save(path, data)
 
     def delete_long_term(self, category: LongTermCategory, key: str) -> bool:
-        path = _CATEGORY_FILES[category]
+        path = self._category_files[category]
         data = _load(path, {"entries": []})
         before = len(data["entries"])
         data["entries"] = [e for e in data["entries"] if e["key"] != key]
@@ -91,7 +89,7 @@ class MemoryStore:
         return False
 
     def clear_long_term(self, category: LongTermCategory) -> None:
-        _save(_CATEGORY_FILES[category], {"entries": []})
+        _save(self._category_files[category], {"entries": []})
 
     # ── Snapshot (all levels) ─────────────────────────────────────────────
 

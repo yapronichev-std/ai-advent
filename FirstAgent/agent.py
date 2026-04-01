@@ -8,22 +8,29 @@ from memory import MemoryStore
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-HISTORY_FILE = Path("history.json")
-TOKENS_FILE = Path("tokens.json")
-SUMMARY_FILE = Path("summary.json")
 DEFAULT_TOKEN_LIMIT = 1_000_000
 MAX_HISTORY = 10
 
+# Profile keys that directly shape the system prompt behaviour
+_BEHAVIOUR_KEYS = {"name", "language", "response_style"}
+
 
 class ChatAgent:
-    def __init__(self, api_key: str, model: str, system_prompt: Optional[str] = None):
+    def __init__(self, api_key: str, model: str, system_prompt: Optional[str] = None, user_id: str = "default"):
         self.api_key = api_key
         self.model = model
-        self.system_prompt = system_prompt
+        self.base_system_prompt = system_prompt
+        self.user_id = user_id
+
+        user_dir = Path("memory") / "users" / user_id
+        self._history_file = user_dir / "history.json"
+        self._tokens_file = user_dir / "tokens.json"
+        self._summary_file = user_dir / "summary.json"
+
         self.history: list[dict] = self._load_history()
         self.token_stats: dict = self._load_tokens()
         self.summary: str = self._load_summary()
-        self.memory = MemoryStore()
+        self.memory = MemoryStore(user_id=user_id)
 
     async def send_message(self, user_message: str) -> tuple[str, dict]:
         command_response = self._handle_command(user_message)
@@ -69,31 +76,74 @@ class ChatAgent:
         self.token_stats = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "limit": limit}
         self._save_tokens()
 
+    # ── Персонализация ────────────────────────────────────────────────────
+
+    def _build_system_prompt(self) -> str:
+        """Дополняет базовый промпт поведенческими инструкциями из профиля пользователя."""
+        if not self.base_system_prompt:
+            return ""
+
+        profile = {e["key"]: e["value"] for e in self.memory.get_long_term("profile")}
+        if not profile:
+            return self.base_system_prompt
+
+        additions: list[str] = []
+        if name := profile.get("name"):
+            additions.append(f"Address the user as {name}.")
+        if lang := profile.get("language"):
+            additions.append(f"Always respond in {lang}.")
+        if style := profile.get("response_style"):
+            additions.append(f"Response style: {style}.")
+
+        if additions:
+            return self.base_system_prompt + "\n\n" + " ".join(additions)
+        return self.base_system_prompt
+
+    # ── Построение сообщений ──────────────────────────────────────────────
+
+    def _build_messages(self) -> list[dict]:
+        messages = []
+        system_prompt = self._build_system_prompt()
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        memory_context = self.memory.build_context_block()
+        if memory_context:
+            messages.append({"role": "system", "content": memory_context})
+        if self.summary:
+            messages.append({"role": "system", "content": f"Summary of earlier conversation:\n{self.summary}"})
+        messages.extend(self.history)
+        return messages
+
+    # ── Файловые операции ─────────────────────────────────────────────────
+
     def _load_history(self) -> list[dict]:
-        if HISTORY_FILE.exists():
-            return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        if self._history_file.exists():
+            return json.loads(self._history_file.read_text(encoding="utf-8"))
         return []
 
     def _save_history(self) -> None:
-        HISTORY_FILE.write_text(json.dumps(self.history, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._history_file.parent.mkdir(parents=True, exist_ok=True)
+        self._history_file.write_text(json.dumps(self.history, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _load_summary(self) -> str:
-        if SUMMARY_FILE.exists():
-            return json.loads(SUMMARY_FILE.read_text(encoding="utf-8")).get("summary", "")
+        if self._summary_file.exists():
+            return json.loads(self._summary_file.read_text(encoding="utf-8")).get("summary", "")
         return ""
 
     def _save_summary(self) -> None:
-        SUMMARY_FILE.write_text(json.dumps({"summary": self.summary}, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._summary_file.parent.mkdir(parents=True, exist_ok=True)
+        self._summary_file.write_text(json.dumps({"summary": self.summary}, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _load_tokens(self) -> dict:
-        if TOKENS_FILE.exists():
-            data = json.loads(TOKENS_FILE.read_text(encoding="utf-8"))
+        if self._tokens_file.exists():
+            data = json.loads(self._tokens_file.read_text(encoding="utf-8"))
             data.setdefault("limit", DEFAULT_TOKEN_LIMIT)
             return data
         return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "limit": DEFAULT_TOKEN_LIMIT}
 
     def _save_tokens(self) -> None:
-        TOKENS_FILE.write_text(json.dumps(self.token_stats, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._tokens_file.parent.mkdir(parents=True, exist_ok=True)
+        self._tokens_file.write_text(json.dumps(self.token_stats, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _accumulate_tokens(self, usage: dict) -> None:
         self.token_stats["prompt_tokens"] += usage.get("prompt_tokens", 0)
@@ -109,23 +159,12 @@ class ChatAgent:
             f"{m['role'].upper()}: {m['content']}" for m in to_summarize
         )
         prompt = f"Summarize the following conversation fragment concisely, preserving key facts, decisions and context:\n\n{conversation_text}"
-        summary_messages = [{"role": "user", "content": prompt}]
-        new_summary, _ = await self._call_api(summary_messages)
+        new_summary, _ = await self._call_api([{"role": "user", "content": prompt}])
 
         self.summary = f"{self.summary}\n\n{new_summary}".strip() if self.summary else new_summary
         self._save_summary()
 
-    def _build_messages(self) -> list[dict]:
-        messages = []
-        if self.system_prompt:
-            messages.append({"role": "system", "content": self.system_prompt})
-        memory_context = self.memory.build_context_block()
-        if memory_context:
-            messages.append({"role": "system", "content": memory_context})
-        if self.summary:
-            messages.append({"role": "system", "content": f"Summary of earlier conversation:\n{self.summary}"})
-        messages.extend(self.history)
-        return messages
+    # ── Команды ───────────────────────────────────────────────────────────
 
     def _handle_command(self, message: str) -> Optional[str]:
         """Parse a /command message. Returns response text or None if not a command."""
@@ -207,7 +246,7 @@ class ChatAgent:
 
     def _format_memory_snapshot(self) -> str:
         snap = self.memory.snapshot()
-        lines = ["=== Memory snapshot ===\n"]
+        lines = [f"=== Memory snapshot (user: {self.user_id}) ===\n"]
 
         w = snap["working"]
         lines.append("[ Working memory ]")
