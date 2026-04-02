@@ -45,6 +45,9 @@ const memLtKey         = document.getElementById('mem-lt-key');
 const memLtVal         = document.getElementById('mem-lt-val');
 const memAddLtBtn      = document.getElementById('mem-add-lt-btn');
 const memTabs          = document.querySelectorAll('.mem-tab');
+const taskFsmBar       = document.getElementById('task-fsm-bar');
+const taskFsmMeta      = document.getElementById('task-fsm-meta');
+const taskFsmStates    = document.querySelectorAll('.task-fsm-state');
 
 let currentLtCategory = 'profile';
 const WARNING_THRESHOLD = 0.8;
@@ -330,12 +333,42 @@ function renderLongTermMemory(entries) {
     }
 }
 
+function renderTaskFsm(ts) {
+    if (!ts) {
+        taskFsmBar.hidden = true;
+        return;
+    }
+    taskFsmBar.hidden = false;
+
+    const isBlocked = ts.state === 'blocked';
+    taskFsmStates.forEach(el => {
+        const s = el.dataset.state;
+        el.className = 'task-fsm-state';
+        if (s === ts.state || (isBlocked && s === 'execution')) {
+            el.classList.add(isBlocked ? 'blocked' : 'active');
+        }
+        if (ts.state === 'done' && s === 'done') el.classList.add('done');
+    });
+
+    let meta = '';
+    if (ts.step_total > 0) {
+        meta += `${ts.step_current}/${ts.step_total}`;
+        if (ts.step_description) meta += `: ${ts.step_description}`;
+    }
+    if (ts.expected_action && ts.expected_action !== 'none') {
+        if (meta) meta += ' · ';
+        meta += ts.expected_action;
+    }
+    taskFsmMeta.textContent = meta;
+}
+
 async function loadMemory() {
     try {
         const res = await fetch(`/memory?user_id=${encodeURIComponent(currentUserId)}`);
         if (!res.ok) return;
         const data = await res.json();
         renderWorkingMemory(data.working);
+        renderTaskFsm(data.task_state);
         renderLongTermMemory(data.long_term[currentLtCategory]);
     } catch (_) {}
 }

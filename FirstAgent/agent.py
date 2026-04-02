@@ -6,6 +6,7 @@ from typing import Optional
 
 from config import load_system_prompt
 from memory import MemoryStore
+from task_state import TaskFSM
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -182,13 +183,111 @@ class ChatAgent:
             if not args:
                 return "Usage: /task <description>"
             self.memory.set_task(args)
-            return f"Task started: {args}"
+            fsm = TaskFSM.new(args)
+            self.memory.save_task_state(fsm)
+            return f"Task started: {args}\nState: planning | Expected: define_steps"
+
+        if cmd == "/task-steps":
+            if not args:
+                return "Usage: /task-steps <N>"
+            try:
+                total = int(args.strip())
+            except ValueError:
+                return "Usage: /task-steps <N>  (N must be an integer)"
+            fsm = self.memory.get_task_state()
+            if not fsm:
+                return "No active task. Use /task <description> first."
+            try:
+                fsm.set_steps(total)
+                fsm.transition("execution")
+            except ValueError as e:
+                return str(e)
+            self.memory.save_task_state(fsm)
+            return f"Steps set to {total}. State: execution | Expected: execute_step"
+
+        if cmd == "/task-next":
+            fsm = self.memory.get_task_state()
+            if not fsm:
+                return "No active task."
+            fsm.next_step(args)
+            self.memory.save_task_state(fsm)
+            total_label = str(fsm.step_total) if fsm.step_total else "?"
+            suffix = f" — {args}" if args else ""
+            return f"Step {fsm.step_current}/{total_label}{suffix} | Expected: confirm_step"
+
+        if cmd == "/task-block":
+            fsm = self.memory.get_task_state()
+            if not fsm:
+                return "No active task."
+            try:
+                fsm.transition("blocked")
+            except ValueError as e:
+                return str(e)
+            if args:
+                self.memory.add_working_fact("block_reason", args)
+            self.memory.save_task_state(fsm)
+            return "Task blocked. Expected: user_input"
+
+        if cmd == "/task-unblock":
+            fsm = self.memory.get_task_state()
+            if not fsm:
+                return "No active task."
+            try:
+                fsm.transition("execution")
+            except ValueError as e:
+                return str(e)
+            self.memory.save_task_state(fsm)
+            return "Task unblocked. State: execution | Expected: execute_step"
+
+        if cmd == "/task-validate":
+            fsm = self.memory.get_task_state()
+            if not fsm:
+                return "No active task."
+            try:
+                fsm.transition("validation")
+            except ValueError as e:
+                return str(e)
+            self.memory.save_task_state(fsm)
+            return "Task in validation. Expected: validate"
+
+        if cmd == "/task-replan":
+            fsm = self.memory.get_task_state()
+            if not fsm:
+                return "No active task."
+            try:
+                fsm.transition("planning")
+            except ValueError as e:
+                return str(e)
+            self.memory.save_task_state(fsm)
+            return "Task back in planning. Expected: define_steps"
+
+        if cmd == "/task-status":
+            fsm = self.memory.get_task_state()
+            if not fsm:
+                w = self.memory.get_working()
+                return f"Task: {w.get('task') or '(none)'}\nNo FSM state active."
+            d = fsm.to_dict()
+            lines = [f"Task: {d['description']}", f"State: {d['state']}"]
+            if d["step_total"] > 0:
+                lines.append(f"Step: {d['step_current']}/{d['step_total']}")
+                if d["step_description"]:
+                    lines.append(f"  └ {d['step_description']}")
+            lines.append(f"Expected: {d['expected_action']}")
+            if d["history"]:
+                lines.append("History:")
+                for h in d["history"]:
+                    lines.append(f"  {h['from']} → {h['to']}  ({h['at']})")
+            return "\n".join(lines)
 
         if cmd == "/task-done":
+            fsm = self.memory.get_task_state()
             w = self.memory.get_working()
-            task = w.get("task") or "(no active task)"
+            task = (fsm.description if fsm else None) or w.get("task") or "(no active task)"
+            if fsm:
+                fsm.force_complete()
+                self.memory.save_task_state(fsm)
             self.memory.clear_working()
-            return f"Task completed and cleared: {task}"
+            return f"Task completed: {task}"
 
         if cmd == "/fact":
             if ": " not in args:
@@ -230,9 +329,17 @@ class ChatAgent:
 
         if cmd == "/help":
             return (
-                "Memory commands:\n"
-                "  /task <desc>              — start a working task\n"
-                "  /task-done                — complete and clear current task\n"
+                "Task FSM commands:\n"
+                "  /task <desc>              — start a task (state: planning)\n"
+                "  /task-steps <N>           — set N steps, move to execution\n"
+                "  /task-next [desc]         — advance to next step\n"
+                "  /task-block [reason]      — block task (waiting for input)\n"
+                "  /task-unblock             — resume blocked task\n"
+                "  /task-validate            — move to validation phase\n"
+                "  /task-replan              — return to planning\n"
+                "  /task-done                — complete and clear task\n"
+                "  /task-status              — show full FSM state\n"
+                "\nMemory commands:\n"
                 "  /fact <key>: <value>      — add fact to working memory\n"
                 "  /remember <key>: <value>  — save to long-term knowledge\n"
                 "  /profile <key>: <value>   — save to user profile\n"

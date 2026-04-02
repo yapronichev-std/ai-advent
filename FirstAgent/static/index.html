@@ -105,6 +105,19 @@
                     <input class="mem-input-full" id="mem-task-input" placeholder="Set task and press Enter…">
                 </div>
 
+                <div class="task-fsm-bar" id="task-fsm-bar" hidden>
+                    <div class="task-fsm-states">
+                        <span class="task-fsm-state" data-state="planning">planning</span>
+                        <span class="task-fsm-sep">→</span>
+                        <span class="task-fsm-state" data-state="execution">execution</span>
+                        <span class="task-fsm-sep">→</span>
+                        <span class="task-fsm-state" data-state="validation">validation</span>
+                        <span class="task-fsm-sep">→</span>
+                        <span class="task-fsm-state" data-state="done">done</span>
+                    </div>
+                    <div class="task-fsm-meta" id="task-fsm-meta"></div>
+                </div>
+
                 <div class="mem-entries-list" id="mem-facts-list"></div>
 
                 <div class="mem-add-row">

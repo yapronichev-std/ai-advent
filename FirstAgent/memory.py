@@ -1,7 +1,9 @@
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Optional
+
+from task_state import TaskFSM
 
 MEMORY_DIR = Path("memory")
 
@@ -33,6 +35,7 @@ class MemoryStore:
         long_term_dir = user_dir / "long_term"
 
         self._task_file = working_dir / "current_task.json"
+        self._task_state_file = working_dir / "task_state.json"
         self._category_files: dict[LongTermCategory, Path] = {
             "profile": long_term_dir / "profile.json",
             "decisions": long_term_dir / "decisions.json",
@@ -65,6 +68,19 @@ class MemoryStore:
     def clear_working(self) -> None:
         _save(self._task_file, {"task": None, "facts": [], "started_at": None})
 
+    # ── Task FSM state ───────────────────────────────────────────────────
+
+    def get_task_state(self) -> Optional[TaskFSM]:
+        data = _load(self._task_state_file, None)
+        return TaskFSM.from_dict(data) if data else None
+
+    def save_task_state(self, fsm: TaskFSM) -> None:
+        _save(self._task_state_file, fsm.to_dict())
+
+    def clear_task_state(self) -> None:
+        if self._task_state_file.exists():
+            self._task_state_file.unlink()
+
     # ── Long-term memory ─────────────────────────────────────────────────
 
     def get_long_term(self, category: LongTermCategory) -> list[dict]:
@@ -94,8 +110,10 @@ class MemoryStore:
     # ── Snapshot (all levels) ─────────────────────────────────────────────
 
     def snapshot(self) -> dict:
+        fsm = self.get_task_state()
         return {
             "working": self.get_working(),
+            "task_state": fsm.to_dict() if fsm else None,
             "long_term": {
                 "profile": self.get_long_term("profile"),
                 "decisions": self.get_long_term("decisions"),
@@ -110,7 +128,15 @@ class MemoryStore:
         parts: list[str] = []
 
         w = self.get_working()
-        if w["task"]:
+        fsm = self.get_task_state()
+
+        if fsm:
+            task_section = f"[Task state]\nDescription: {fsm.description}\n{fsm.to_context_string()}"
+            if w["facts"]:
+                facts_text = "\n".join(f"  - {f['key']}: {f['value']}" for f in w["facts"])
+                task_section += f"\nKnown facts:\n{facts_text}"
+            parts.append(task_section)
+        elif w["task"]:
             parts.append(f"[Working memory]\nCurrent task: {w['task']}")
             if w["facts"]:
                 facts_text = "\n".join(f"  - {f['key']}: {f['value']}" for f in w["facts"])

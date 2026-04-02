@@ -72,6 +72,14 @@ class TaskRequest(BaseModel):
     description: str
 
 
+class TaskTransitionRequest(BaseModel):
+    to_state: str
+
+
+class TaskNextStepRequest(BaseModel):
+    description: str = ""
+
+
 LongTermCategory = Literal["profile", "decisions", "knowledge"]
 
 
@@ -219,6 +227,41 @@ async def delete_user(user_id: str):
     if not deleted:
         raise HTTPException(status_code=404, detail=f"User '{user_id}' not found")
     return {"status": "ok", "user_id": user_id}
+
+
+# ── Task FSM ─────────────────────────────────────────────────────────────────
+
+@app.get("/task/state")
+async def get_task_state(user_id: str = Query(default="default")):
+    fsm = get_agent(user_id).memory.get_task_state()
+    if not fsm:
+        raise HTTPException(status_code=404, detail="No active task")
+    return fsm.to_dict()
+
+
+@app.post("/task/transition")
+async def transition_task(request: TaskTransitionRequest, user_id: str = Query(default="default")):
+    agent = get_agent(user_id)
+    fsm = agent.memory.get_task_state()
+    if not fsm:
+        raise HTTPException(status_code=404, detail="No active task")
+    try:
+        fsm.transition(request.to_state)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    agent.memory.save_task_state(fsm)
+    return fsm.to_dict()
+
+
+@app.post("/task/next-step")
+async def next_task_step(request: TaskNextStepRequest, user_id: str = Query(default="default")):
+    agent = get_agent(user_id)
+    fsm = agent.memory.get_task_state()
+    if not fsm:
+        raise HTTPException(status_code=404, detail="No active task")
+    fsm.next_step(request.description)
+    agent.memory.save_task_state(fsm)
+    return fsm.to_dict()
 
 
 # ── System prompt ────────────────────────────────────────────────────────────

@@ -597,6 +597,66 @@ body {
     box-shadow: 0 1px 3px rgba(0,0,0,0.08);
 }
 
+/* ── Task FSM bar ── */
+.task-fsm-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 8px;
+    background: #f0f4ff;
+    border: 1px solid #dbeafe;
+    border-radius: 8px;
+}
+
+.task-fsm-states {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    flex-wrap: nowrap;
+    overflow: hidden;
+}
+
+.task-fsm-state {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 10px;
+    background: #e5e7eb;
+    color: #9ca3af;
+    white-space: nowrap;
+    transition: background 0.2s, color 0.2s;
+}
+
+.task-fsm-state.active {
+    background: #2563eb;
+    color: #fff;
+}
+
+.task-fsm-state.blocked {
+    background: #f59e0b;
+    color: #fff;
+}
+
+.task-fsm-state.done {
+    background: #16a34a;
+    color: #fff;
+}
+
+.task-fsm-sep {
+    font-size: 10px;
+    color: #d1d5db;
+    flex-shrink: 0;
+}
+
+.task-fsm-meta {
+    font-size: 11px;
+    color: #4b5563;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-height: 14px;
+}
+
 /* ── System prompt panel ── */
 .sysprompt-details {
     border-bottom: 1px solid #e5e7eb;
