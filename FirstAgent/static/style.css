@@ -747,6 +747,29 @@ body {
 
 #sysprompt-save-btn:hover { background: #1d4ed8; }
 
+/* ── Invariants ── */
+.inv-toggle-btn {
+    color: #2563eb;
+    font-size: 10px;
+    border-color: #bfdbfe;
+}
+
+.inv-toggle-btn:hover {
+    background: #eff6ff !important;
+    color: #1d4ed8 !important;
+    border-color: #93c5fd !important;
+}
+
+.inv-inactive .inv-text {
+    opacity: 0.4;
+    text-decoration: line-through;
+}
+
+.inv-inactive .inv-toggle-btn {
+    color: #9ca3af;
+    border-color: #e5e7eb;
+}
+
 /* ── User selector ── */
 .chat-header {
     flex-wrap: wrap;

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from config import load_system_prompt
+from invariants import InvariantStore
 from memory import MemoryStore
 from task_state import TaskFSM
 
@@ -32,6 +33,7 @@ class ChatAgent:
         self.token_stats: dict = self._load_tokens()
         self.summary: str = self._load_summary()
         self.memory = MemoryStore(user_id=user_id)
+        self.invariants = InvariantStore()
 
     async def send_message(self, user_message: str) -> tuple[str, dict]:
         command_response = self._handle_command(user_message)
@@ -106,6 +108,9 @@ class ChatAgent:
         system_prompt = self._build_system_prompt()
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
+        invariants_block = self.invariants.build_prompt_block()
+        if invariants_block:
+            messages.append({"role": "system", "content": invariants_block})
         memory_context = self.memory.build_context_block()
         if memory_context:
             messages.append({"role": "system", "content": memory_context})
@@ -327,6 +332,51 @@ class ChatAgent:
             deleted = self.memory.delete_long_term(category, key)  # type: ignore[arg-type]
             return f"Deleted [{key}] from {category}." if deleted else f"Key [{key}] not found in {category}."
 
+        if cmd == "/invariant":
+            if not args:
+                return "Usage: /invariant <rule text>"
+            item = self.invariants.add(args)
+            items = self.invariants.list_all()
+            n = next(i + 1 for i, x in enumerate(items) if x["id"] == item["id"])
+            return f"Invariant #{n} added: {item['text']}"
+
+        if cmd == "/invariants":
+            items = self.invariants.list_all()
+            if not items:
+                return "No invariants defined."
+            lines = ["Invariants:"]
+            for i, inv in enumerate(items, 1):
+                status = "on" if inv.get("active", True) else "off"
+                lines.append(f"  {i}. [{status}] {inv['text']}  ({inv['id']})")
+            return "\n".join(lines)
+
+        if cmd == "/invariant-del":
+            if not args:
+                return "Usage: /invariant-del <number>"
+            inv_id = self._resolve_invariant_id(args.strip())
+            if not inv_id:
+                return f"Invariant '{args.strip()}' not found."
+            self.invariants.delete(inv_id)
+            return f"Invariant deleted."
+
+        if cmd == "/invariant-off":
+            if not args:
+                return "Usage: /invariant-off <number>"
+            inv_id = self._resolve_invariant_id(args.strip())
+            if not inv_id:
+                return f"Invariant '{args.strip()}' not found."
+            self.invariants.set_active(inv_id, False)
+            return "Invariant disabled."
+
+        if cmd == "/invariant-on":
+            if not args:
+                return "Usage: /invariant-on <number>"
+            inv_id = self._resolve_invariant_id(args.strip())
+            if not inv_id:
+                return f"Invariant '{args.strip()}' not found."
+            self.invariants.set_active(inv_id, True)
+            return "Invariant enabled."
+
         if cmd == "/help":
             return (
                 "Task FSM commands:\n"
@@ -345,10 +395,29 @@ class ChatAgent:
                 "  /profile <key>: <value>   — save to user profile\n"
                 "  /decide <key>: <value>    — save to decisions\n"
                 "  /forget <cat> <key>       — delete from long-term memory\n"
-                "  /memory                   — show all memory levels"
+                "  /memory                   — show all memory levels\n"
+                "\nInvariant commands:\n"
+                "  /invariant <rule>         — add an invariant\n"
+                "  /invariants               — list all invariants\n"
+                "  /invariant-del <n>        — delete invariant by number\n"
+                "  /invariant-off <n>        — temporarily disable invariant\n"
+                "  /invariant-on <n>         — re-enable invariant"
             )
 
         return None  # unknown command — let the LLM handle it
+
+    def _resolve_invariant_id(self, arg: str) -> Optional[str]:
+        """Resolve a 1-based position number or inv_XXXXXXXX id to an id string."""
+        items = self.invariants.list_all()
+        if arg.startswith("inv_"):
+            return arg if any(i["id"] == arg for i in items) else None
+        try:
+            n = int(arg)
+            if 1 <= n <= len(items):
+                return items[n - 1]["id"]
+        except ValueError:
+            pass
+        return None
 
     def _format_memory_snapshot(self) -> str:
         snap = self.memory.snapshot()

@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from agent import ChatAgent
 from config import load_system_prompt, save_system_prompt
+from invariants import InvariantStore
 from profiles import UserProfileManager
 
 load_dotenv()
@@ -19,6 +20,7 @@ MODEL = "arcee-ai/trinity-large-preview:free"
 api_key: str
 agents: dict[str, ChatAgent] = {}
 profile_manager = UserProfileManager()
+invariant_store = InvariantStore()
 
 
 def get_agent(user_id: str) -> ChatAgent:
@@ -66,6 +68,14 @@ class LongTermRequest(BaseModel):
 
 class SystemPromptRequest(BaseModel):
     prompt: str
+
+
+class InvariantRequest(BaseModel):
+    text: str
+
+
+class InvariantPatchRequest(BaseModel):
+    active: bool
 
 
 class TaskRequest(BaseModel):
@@ -275,3 +285,32 @@ async def get_system_prompt():
 async def update_system_prompt(request: SystemPromptRequest):
     save_system_prompt(request.prompt)
     return {"status": "ok", "prompt": request.prompt}
+
+
+# ── Invariants ────────────────────────────────────────────────────────────────
+
+@app.get("/invariants")
+async def list_invariants():
+    return {"invariants": invariant_store.list_all()}
+
+
+@app.post("/invariants", status_code=201)
+async def add_invariant(request: InvariantRequest):
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="Invariant text cannot be empty")
+    return invariant_store.add(request.text)
+
+
+@app.delete("/invariants/{inv_id}")
+async def delete_invariant(inv_id: str):
+    if not invariant_store.delete(inv_id):
+        raise HTTPException(status_code=404, detail=f"Invariant '{inv_id}' not found")
+    return {"status": "ok", "id": inv_id}
+
+
+@app.patch("/invariants/{inv_id}")
+async def patch_invariant(inv_id: str, request: InvariantPatchRequest):
+    item = invariant_store.set_active(inv_id, request.active)
+    if not item:
+        raise HTTPException(status_code=404, detail=f"Invariant '{inv_id}' not found")
+    return item

@@ -273,6 +273,72 @@ clearBtn.addEventListener('click', async () => {
     await loadShortTerm();
 });
 
+// ── Invariants ─────────────────────────────────────────────────────────────
+
+const invList    = document.getElementById('inv-list');
+const invInput   = document.getElementById('inv-input');
+const invAddBtn  = document.getElementById('inv-add-btn');
+
+async function loadInvariants() {
+    try {
+        const res = await fetch('/invariants');
+        if (!res.ok) return;
+        const { invariants } = await res.json();
+        renderInvariants(invariants);
+    } catch (_) {}
+}
+
+function renderInvariants(invariants) {
+    invList.innerHTML = '';
+    if (!invariants || invariants.length === 0) {
+        renderEmptyNote(invList);
+        return;
+    }
+    invariants.forEach(inv => {
+        const isActive = inv.active !== false;
+        const el = document.createElement('div');
+        el.className = `mem-entry inv-entry${isActive ? '' : ' inv-inactive'}`;
+        el.innerHTML =
+            `<button class="inv-toggle-btn mem-icon-btn" title="${isActive ? 'Disable' : 'Enable'}">${isActive ? '●' : '○'}</button>` +
+            `<span class="mem-entry-text inv-text">${escHtml(inv.text)}</span>` +
+            `<button class="mem-del-btn" title="Delete">×</button>`;
+
+        el.querySelector('.mem-del-btn').addEventListener('click', async () => {
+            await fetch(`/invariants/${encodeURIComponent(inv.id)}`, { method: 'DELETE' });
+            await loadInvariants();
+        });
+
+        el.querySelector('.inv-toggle-btn').addEventListener('click', async () => {
+            await fetch(`/invariants/${encodeURIComponent(inv.id)}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ active: !isActive }),
+            });
+            await loadInvariants();
+        });
+
+        invList.appendChild(el);
+    });
+}
+
+invAddBtn.addEventListener('click', async () => {
+    const text = invInput.value.trim();
+    if (!text) return;
+    await fetch('/invariants', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+    });
+    invInput.value = '';
+    await loadInvariants();
+});
+
+invInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') invAddBtn.click();
+});
+
+loadInvariants();
+
 // ── Memory panel ───────────────────────────────────────────────────────────
 
 function renderEntry(key, value, onDelete) {
