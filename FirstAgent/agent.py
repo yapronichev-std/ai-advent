@@ -114,6 +114,19 @@ class ChatAgent:
         memory_context = self.memory.build_context_block()
         if memory_context:
             messages.append({"role": "system", "content": memory_context})
+        task_fsm = self.memory.get_task_state()
+        if task_fsm:
+            allowed = task_fsm.allowed_commands()
+            allowed_str = ", ".join(allowed) if allowed else "none"
+            fsm_rules = (
+                "[TASK FSM RULES]\n"
+                "You MUST follow the task state machine strictly. "
+                "You CANNOT skip phases or suggest commands outside the allowed list.\n"
+                f"Currently allowed commands: {allowed_str}.\n"
+                "Do not suggest /task-done before /task-validate. "
+                "Do not suggest /task-next outside execution phase."
+            )
+            messages.append({"role": "system", "content": fsm_rules})
         if self.summary:
             messages.append({"role": "system", "content": f"Summary of earlier conversation:\n{self.summary}"})
         messages.extend(self.history)
@@ -203,6 +216,7 @@ class ChatAgent:
             if not fsm:
                 return "No active task. Use /task <description> first."
             try:
+                fsm.assert_command_allowed("/task-steps")
                 fsm.set_steps(total)
                 fsm.transition("execution")
             except ValueError as e:
@@ -214,17 +228,34 @@ class ChatAgent:
             fsm = self.memory.get_task_state()
             if not fsm:
                 return "No active task."
-            fsm.next_step(args)
+            try:
+                fsm.assert_command_allowed("/task-next")
+                fsm.next_step(args)
+            except ValueError as e:
+                return str(e)
             self.memory.save_task_state(fsm)
             total_label = str(fsm.step_total) if fsm.step_total else "?"
             suffix = f" — {args}" if args else ""
             return f"Step {fsm.step_current}/{total_label}{suffix} | Expected: confirm_step"
+
+        if cmd == "/task-confirm":
+            fsm = self.memory.get_task_state()
+            if not fsm:
+                return "No active task."
+            try:
+                fsm.assert_command_allowed("/task-confirm")
+            except ValueError as e:
+                return str(e)
+            fsm.set_expected_action("execute_step")
+            self.memory.save_task_state(fsm)
+            return f"Step {fsm.step_current}/{fsm.step_total or '?'} confirmed. Expected: execute_step"
 
         if cmd == "/task-block":
             fsm = self.memory.get_task_state()
             if not fsm:
                 return "No active task."
             try:
+                fsm.assert_command_allowed("/task-block")
                 fsm.transition("blocked")
             except ValueError as e:
                 return str(e)
@@ -238,6 +269,7 @@ class ChatAgent:
             if not fsm:
                 return "No active task."
             try:
+                fsm.assert_command_allowed("/task-unblock")
                 fsm.transition("execution")
             except ValueError as e:
                 return str(e)
@@ -249,6 +281,7 @@ class ChatAgent:
             if not fsm:
                 return "No active task."
             try:
+                fsm.assert_command_allowed("/task-validate")
                 fsm.transition("validation")
             except ValueError as e:
                 return str(e)
@@ -260,6 +293,7 @@ class ChatAgent:
             if not fsm:
                 return "No active task."
             try:
+                fsm.assert_command_allowed("/task-replan")
                 fsm.transition("planning")
             except ValueError as e:
                 return str(e)
@@ -286,11 +320,15 @@ class ChatAgent:
 
         if cmd == "/task-done":
             fsm = self.memory.get_task_state()
-            w = self.memory.get_working()
-            task = (fsm.description if fsm else None) or w.get("task") or "(no active task)"
-            if fsm:
-                fsm.force_complete()
-                self.memory.save_task_state(fsm)
+            if not fsm:
+                return "No active task."
+            try:
+                fsm.assert_command_allowed("/task-done")
+                fsm.transition("done")
+            except ValueError as e:
+                return str(e)
+            task = fsm.description
+            self.memory.save_task_state(fsm)
             self.memory.clear_working()
             return f"Task completed: {task}"
 
@@ -381,13 +419,14 @@ class ChatAgent:
             return (
                 "Task FSM commands:\n"
                 "  /task <desc>              — start a task (state: planning)\n"
-                "  /task-steps <N>           — set N steps, move to execution\n"
-                "  /task-next [desc]         — advance to next step\n"
-                "  /task-block [reason]      — block task (waiting for input)\n"
-                "  /task-unblock             — resume blocked task\n"
-                "  /task-validate            — move to validation phase\n"
-                "  /task-replan              — return to planning\n"
-                "  /task-done                — complete and clear task\n"
+                "  /task-steps <N>           — set N steps, move to execution  [planning only]\n"
+                "  /task-next [desc]         — advance to next step             [execution only]\n"
+                "  /task-confirm             — confirm current step done        [execution only]\n"
+                "  /task-block [reason]      — block task (waiting for input)   [execution only]\n"
+                "  /task-unblock             — resume blocked task              [blocked only]\n"
+                "  /task-validate            — move to validation phase         [execution only]\n"
+                "  /task-replan              — return to planning               [validation only]\n"
+                "  /task-done                — complete and clear task          [validation only]\n"
                 "  /task-status              — show full FSM state\n"
                 "\nMemory commands:\n"
                 "  /fact <key>: <value>      — add fact to working memory\n"
