@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Literal
@@ -11,9 +12,15 @@ from pydantic import BaseModel
 from agent import ChatAgent
 from config import load_system_prompt, save_system_prompt
 from invariants import InvariantStore
+from mcp_weather import MCPWeatherClient
 from profiles import UserProfileManager
 
 load_dotenv()
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 MODEL = "arcee-ai/trinity-large-preview:free"
 
@@ -21,21 +28,34 @@ api_key: str
 agents: dict[str, ChatAgent] = {}
 profile_manager = UserProfileManager()
 invariant_store = InvariantStore()
+mcp_client: MCPWeatherClient | None = None
 
 
 def get_agent(user_id: str) -> ChatAgent:
     if user_id not in agents:
-        agents[user_id] = ChatAgent(api_key=api_key, model=MODEL, user_id=user_id)
+        agents[user_id] = ChatAgent(api_key=api_key, model=MODEL, user_id=user_id, mcp_client=mcp_client)
     return agents[user_id]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global api_key
+    global api_key, mcp_client
     api_key = os.getenv("OPENROUTER_API_KEY", "")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set in .env")
+
+    mcp_client = MCPWeatherClient()
+    try:
+        await mcp_client.connect()
+        print(f"MCP weather tools loaded: {[t['function']['name'] for t in mcp_client.tools]}")
+    except Exception as e:
+        print(f"WARNING: MCP weather server unavailable: {e}")
+        mcp_client = None
+
     yield
+
+    if mcp_client:
+        await mcp_client.disconnect()
 
 
 app = FastAPI(title="Chat Agent", lifespan=lifespan)

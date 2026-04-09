@@ -8,6 +8,7 @@ from config import load_system_prompt
 from invariants import InvariantStore
 from memory import MemoryStore
 from task_state import TaskFSM
+from mcp_weather import MCPWeatherClient
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -19,10 +20,12 @@ _BEHAVIOUR_KEYS = {"name", "language", "response_style"}
 
 
 class ChatAgent:
-    def __init__(self, api_key: str, model: str, user_id: str = "default"):
+    def __init__(self, api_key: str, model: str, user_id: str = "default",
+                 mcp_client: Optional[MCPWeatherClient] = None):
         self.api_key = api_key
         self.model = model
         self.user_id = user_id
+        self.mcp_client = mcp_client
 
         user_dir = Path("memory") / "users" / user_id
         self._history_file = user_dir / "history.json"
@@ -487,16 +490,37 @@ class ChatAgent:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        payload = {
-            "model": self.model,
-            "messages": messages,
-        }
+
+        tools = self.mcp_client.tools if self.mcp_client else []
+        current_messages = list(messages)
+        total_usage: dict = {}
 
         async with httpx.AsyncClient(timeout=60.0) as client:
-            response = client.post(OPENROUTER_URL, headers=headers, json=payload)
-            response = await response
-            response.raise_for_status()
-            data = response.json()
-            content = data["choices"][0]["message"]["content"]
-            usage = data.get("usage", {})
-            return content, usage
+            while True:
+                payload: dict = {"model": self.model, "messages": current_messages}
+                if tools:
+                    payload["tools"] = tools
+                    payload["tool_choice"] = "auto"
+
+                response = await client.post(OPENROUTER_URL, headers=headers, json=payload)
+                response.raise_for_status()
+                data = response.json()
+                total_usage = data.get("usage", {})
+
+                choice = data["choices"][0]
+                message = choice["message"]
+                finish_reason = choice.get("finish_reason")
+
+                if finish_reason == "tool_calls" and self.mcp_client:
+                    current_messages.append(message)
+                    for tool_call in message.get("tool_calls", []):
+                        fn = tool_call["function"]
+                        arguments = json.loads(fn["arguments"]) if isinstance(fn["arguments"], str) else fn["arguments"]
+                        result = await self.mcp_client.call_tool(fn["name"], arguments)
+                        current_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "content": result,
+                        })
+                else:
+                    return message["content"], total_usage
