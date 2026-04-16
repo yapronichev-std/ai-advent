@@ -20,7 +20,7 @@ python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 ## История доработок
 
-### Day 16 — MCP-сервер генерации UML-диаграмм (draw.io)
+### Day 17 — MCP-сервер генерации UML-диаграмм (draw.io)
 
 Реализован MCP-сервер `mcp_drawio_server`, который генерирует UML-диаграммы в формате **draw.io XML** (`.drawio`). Сервер встроен в FirstAgent через MCP-клиент по той же схеме, что и погодный сервер.
 
