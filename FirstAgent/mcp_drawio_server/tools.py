@@ -2,7 +2,9 @@
 
 import base64
 import logging
+import os
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from models import ClassDiagramInput, ComponentDiagramInput, UseCaseDiagramInput
@@ -15,13 +17,27 @@ from layout import apply_grid_layout
 
 logger = logging.getLogger(__name__)
 
+# Output directory: DIAGRAMS_DIR env var, or <FirstAgent>/diagrams/ by default.
+_OUTPUT_DIR = Path(
+    os.environ.get("DIAGRAMS_DIR", Path(__file__).parent.parent / "diagrams")
+)
+
 
 def _date_suffix() -> str:
-    return datetime.now().strftime("%Y%m%d")
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
 def _encode(xml: str) -> str:
     return base64.b64encode(xml.encode()).decode()
+
+
+def _save(xml: str, filename: str) -> str:
+    """Write *xml* to _OUTPUT_DIR/<filename> and return the absolute path."""
+    _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    path = _OUTPUT_DIR / filename
+    path.write_text(xml, encoding="utf-8")
+    logger.info("Diagram saved → %s", path)
+    return str(path)
 
 
 def handle_generate_class_diagram(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -53,7 +69,8 @@ def handle_generate_class_diagram(arguments: dict[str, Any]) -> dict[str, Any]:
 
     xml = build_class_diagram_xml(classes, relations)
     filename = f"class_diagram_{_date_suffix()}.drawio"
-    return {"drawio_xml": xml, "filename": filename, "base64": _encode(xml)}
+    saved_path = _save(xml, filename)
+    return {"drawio_xml": xml, "filename": filename, "saved_path": saved_path, "base64": _encode(xml)}
 
 
 def handle_generate_component_diagram(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -82,7 +99,8 @@ def handle_generate_component_diagram(arguments: dict[str, Any]) -> dict[str, An
 
     xml = build_component_diagram_xml(components, relations)
     filename = f"component_diagram_{_date_suffix()}.drawio"
-    return {"drawio_xml": xml, "filename": filename, "base64": _encode(xml)}
+    saved_path = _save(xml, filename)
+    return {"drawio_xml": xml, "filename": filename, "saved_path": saved_path, "base64": _encode(xml)}
 
 
 def handle_generate_use_case_diagram(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -120,4 +138,5 @@ def handle_generate_use_case_diagram(arguments: dict[str, Any]) -> dict[str, Any
 
     xml = build_use_case_diagram_xml(actors, use_cases, relations)
     filename = f"use_case_diagram_{_date_suffix()}.drawio"
-    return {"drawio_xml": xml, "filename": filename, "base64": _encode(xml)}
+    saved_path = _save(xml, filename)
+    return {"drawio_xml": xml, "filename": filename, "saved_path": saved_path, "base64": _encode(xml)}
