@@ -12,6 +12,8 @@ from pydantic import BaseModel
 from agent import ChatAgent
 from config import load_system_prompt, save_system_prompt
 from invariants import InvariantStore
+from mcp_drawio_client import MCPDrawioClient
+from mcp_multi import MultiMCPClient
 from mcp_weather import MCPWeatherClient
 from profiles import UserProfileManager
 
@@ -28,7 +30,7 @@ api_key: str
 agents: dict[str, ChatAgent] = {}
 profile_manager = UserProfileManager()
 invariant_store = InvariantStore()
-mcp_client: MCPWeatherClient | None = None
+mcp_client: MultiMCPClient | None = None
 
 
 def get_agent(user_id: str) -> ChatAgent:
@@ -44,12 +46,14 @@ async def lifespan(app: FastAPI):
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set in .env")
 
-    mcp_client = MCPWeatherClient()
+    mcp_client = MultiMCPClient([
+        MCPDrawioClient(),
+    ])
     try:
         await mcp_client.connect()
-        print(f"MCP weather tools loaded: {[t['function']['name'] for t in mcp_client.tools]}")
+        print(f"MCP tools loaded: {[t['function']['name'] for t in mcp_client.tools]}")
     except Exception as e:
-        print(f"WARNING: MCP weather server unavailable: {e}")
+        print(f"WARNING: MCP clients unavailable: {e}")
         mcp_client = None
 
     yield
