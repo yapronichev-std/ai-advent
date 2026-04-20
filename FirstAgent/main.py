@@ -4,6 +4,8 @@ from contextlib import asynccontextmanager
 from typing import Literal
 
 from dotenv import load_dotenv
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -65,6 +67,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Chat Agent", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+Path("diagrams").mkdir(exist_ok=True)
+app.mount("/diagrams", StaticFiles(directory="diagrams"), name="diagrams")
+
 
 # ── Request / Response models ────────────────────────────────────────────────
 
@@ -78,6 +83,7 @@ class MessageResponse(BaseModel):
     history: list[dict]
     usage: dict
     user_id: str
+    diagram_urls: list[str] = []
 
 
 class FactRequest(BaseModel):
@@ -131,12 +137,13 @@ async def chat(request: MessageRequest):
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
     agent = get_agent(request.user_id)
-    response_text, usage = await agent.send_message(request.text)
+    response_text, usage, diagram_urls = await agent.send_message(request.text)
     return MessageResponse(
         response=response_text,
         history=agent.get_history(),
         usage=usage,
         user_id=request.user_id,
+        diagram_urls=diagram_urls,
     )
 
 

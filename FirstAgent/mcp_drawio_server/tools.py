@@ -70,7 +70,8 @@ def handle_generate_class_diagram(arguments: dict[str, Any]) -> dict[str, Any]:
     xml = build_class_diagram_xml(classes, relations)
     filename = f"class_diagram_{_date_suffix()}.drawio"
     saved_path = _save(xml, filename)
-    return {"drawio_xml": xml, "filename": filename, "saved_path": saved_path, "base64": _encode(xml)}
+    return {"drawio_xml": xml, "filename": filename, "saved_path": saved_path,
+            "diagram_url": f"/diagrams/{filename}", "base64": _encode(xml)}
 
 
 def handle_generate_component_diagram(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -100,7 +101,8 @@ def handle_generate_component_diagram(arguments: dict[str, Any]) -> dict[str, An
     xml = build_component_diagram_xml(components, relations)
     filename = f"component_diagram_{_date_suffix()}.drawio"
     saved_path = _save(xml, filename)
-    return {"drawio_xml": xml, "filename": filename, "saved_path": saved_path, "base64": _encode(xml)}
+    return {"drawio_xml": xml, "filename": filename, "saved_path": saved_path,
+            "diagram_url": f"/diagrams/{filename}", "base64": _encode(xml)}
 
 
 def handle_generate_use_case_diagram(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -139,4 +141,5 @@ def handle_generate_use_case_diagram(arguments: dict[str, Any]) -> dict[str, Any
     xml = build_use_case_diagram_xml(actors, use_cases, relations)
     filename = f"use_case_diagram_{_date_suffix()}.drawio"
     saved_path = _save(xml, filename)
-    return {"drawio_xml": xml, "filename": filename, "saved_path": saved_path, "base64": _encode(xml)}
+    return {"drawio_xml": xml, "filename": filename, "saved_path": saved_path,
+            "diagram_url": f"/diagrams/{filename}", "base64": _encode(xml)}

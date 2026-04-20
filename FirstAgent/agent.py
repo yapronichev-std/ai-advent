@@ -38,19 +38,19 @@ class ChatAgent:
         self.memory = MemoryStore(user_id=user_id)
         self.invariants = InvariantStore()
 
-    async def send_message(self, user_message: str) -> tuple[str, dict]:
+    async def send_message(self, user_message: str) -> tuple[str, dict, list[str]]:
         command_response = self._handle_command(user_message)
         if command_response is not None:
             self.history.append({"role": "user", "content": user_message})
             self.history.append({"role": "assistant", "content": command_response})
             self._save_history()
-            return command_response, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "response_time_ms": 0}
+            return command_response, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "response_time_ms": 0}, []
 
         self.history.append({"role": "user", "content": user_message})
 
         messages = self._build_messages()
         t0 = time.monotonic()
-        response_text, usage = await self._call_api(messages)
+        response_text, usage, diagram_urls = await self._call_api(messages)
         usage["response_time_ms"] = round((time.monotonic() - t0) * 1000)
 
         self.history.append({"role": "assistant", "content": response_text})
@@ -60,7 +60,7 @@ class ChatAgent:
 
         self._save_history()
         self._accumulate_tokens(usage)
-        return response_text, usage
+        return response_text, usage, diagram_urls
 
     def get_history(self) -> list[dict]:
         return self.history
@@ -180,7 +180,7 @@ class ChatAgent:
             f"{m['role'].upper()}: {m['content']}" for m in to_summarize
         )
         prompt = f"Summarize the following conversation fragment concisely, preserving key facts, decisions and context:\n\n{conversation_text}"
-        new_summary, _ = await self._call_api([{"role": "user", "content": prompt}])
+        new_summary, _, _urls = await self._call_api([{"role": "user", "content": prompt}])
 
         self.summary = f"{self.summary}\n\n{new_summary}".strip() if self.summary else new_summary
         self._save_summary()
@@ -485,7 +485,7 @@ class ChatAgent:
 
         return "\n".join(lines)
 
-    async def _call_api(self, messages: list[dict]) -> tuple[str, dict]:
+    async def _call_api(self, messages: list[dict]) -> tuple[str, dict, list[str]]:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -494,6 +494,7 @@ class ChatAgent:
         tools = self.mcp_client.tools if self.mcp_client else []
         current_messages = list(messages)
         total_usage: dict = {}
+        diagram_urls: list[str] = []
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             while True:
@@ -517,10 +518,22 @@ class ChatAgent:
                         fn = tool_call["function"]
                         arguments = json.loads(fn["arguments"]) if isinstance(fn["arguments"], str) else fn["arguments"]
                         result = await self.mcp_client.call_tool(fn["name"], arguments)
+
+                        # Extract diagram URLs and strip heavy fields before sending to LLM
+                        try:
+                            result_obj = json.loads(result)
+                            if url := result_obj.get("diagram_url"):
+                                diagram_urls.append(url)
+                            for field in ("drawio_xml", "base64"):
+                                result_obj.pop(field, None)
+                            content_for_llm = json.dumps(result_obj, ensure_ascii=False)
+                        except (json.JSONDecodeError, AttributeError):
+                            content_for_llm = result
+
                         current_messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call["id"],
-                            "content": result,
+                            "content": content_for_llm,
                         })
                 else:
-                    return message["content"], total_usage
+                    return message["content"], total_usage, diagram_urls

@@ -874,3 +874,60 @@ body {
 }
 
 #user-new-cancel:hover { background: #f3f4f6; }
+
+/* ── Draw.io diagram viewer ── */
+.diagrams-container {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 10px;
+}
+
+.diagram-wrapper {
+    border: 1px solid #dbeafe;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #fff;
+}
+
+.diagram-label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    background: #eff6ff;
+    border-bottom: 1px solid #dbeafe;
+    font-size: 12px;
+    color: #1d4ed8;
+    font-weight: 500;
+}
+
+.diagram-download {
+    font-size: 11px;
+    color: #2563eb;
+    text-decoration: none;
+    padding: 2px 8px;
+    border: 1px solid #bfdbfe;
+    border-radius: 4px;
+    background: #fff;
+    transition: background 0.15s;
+}
+
+.diagram-download:hover { background: #dbeafe; }
+
+.diagram-wrapper .mxgraph {
+    max-width: 100%;
+    overflow: auto;
+    padding: 8px;
+    min-height: 120px;
+}
+
+.diagram-error {
+    padding: 8px 12px;
+    font-size: 12px;
+    color: #dc2626;
+    background: #fef2f2;
+    border: 1px solid #fca5a5;
+    border-radius: 6px;
+    margin-top: 6px;
+}

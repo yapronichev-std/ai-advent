@@ -184,6 +184,49 @@ resetTokensBtn.addEventListener('click', async () => {
 });
 
 // ── Chat ───────────────────────────────────────────────────────────────────
+
+/** Fetch XML from url and inject a draw.io viewer widget into container. */
+async function renderDiagram(url, container) {
+    try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const xml = await res.text();
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'diagram-wrapper';
+
+        const label = document.createElement('div');
+        label.className = 'diagram-label';
+        label.innerHTML =
+            `<span>${escHtml(url.split('/').pop())}</span>` +
+            `<a class="diagram-download" href="${url}" download>↓ скачать</a>`;
+
+        const viewer = document.createElement('div');
+        viewer.className = 'mxgraph';
+        viewer.setAttribute('data-mxgraph', JSON.stringify({
+            xml,
+            nav: true,
+            resize: true,
+            toolbar: 'zoom layers lightbox',
+            'auto-fit': true,
+        }));
+
+        wrapper.appendChild(label);
+        wrapper.appendChild(viewer);
+        container.appendChild(wrapper);
+
+        // Let the viewer script process the new element
+        if (window.GraphViewer && typeof window.GraphViewer.processElements === 'function') {
+            window.GraphViewer.processElements();
+        }
+    } catch (err) {
+        const errEl = document.createElement('div');
+        errEl.className = 'diagram-error';
+        errEl.textContent = `Не удалось загрузить диаграмму: ${err.message}`;
+        container.appendChild(errEl);
+    }
+}
+
 function appendMessage(role, text) {
     const emptyState = messagesEl.querySelector('.empty-state');
     if (emptyState) emptyState.remove();
@@ -194,6 +237,15 @@ function appendMessage(role, text) {
     messagesEl.appendChild(el);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     return el;
+}
+
+function appendDiagrams(msgEl, diagramUrls) {
+    if (!diagramUrls || diagramUrls.length === 0) return;
+    const container = document.createElement('div');
+    container.className = 'diagrams-container';
+    msgEl.appendChild(container);
+    diagramUrls.forEach(url => renderDiagram(url, container));
+    messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 function setLoading(loading) {
@@ -221,6 +273,7 @@ async function sendMessage(text) {
         const data = await res.json();
         thinking.remove();
         const msgEl = appendMessage('assistant', data.response);
+        appendDiagrams(msgEl, data.diagram_urls);
 
         if (data.usage) {
             const u = data.usage;
