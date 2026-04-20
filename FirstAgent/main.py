@@ -16,6 +16,7 @@ from config import load_system_prompt, save_system_prompt
 from invariants import InvariantStore
 from mcp_drawio_client import MCPDrawioClient
 from mcp_multi import MultiMCPClient
+from mcp_telegram_client import MCPTelegramClient
 from mcp_weather import MCPWeatherClient
 from profiles import UserProfileManager
 
@@ -33,17 +34,26 @@ agents: dict[str, ChatAgent] = {}
 profile_manager = UserProfileManager()
 invariant_store = InvariantStore()
 mcp_client: MultiMCPClient | None = None
+telegram_client: MCPTelegramClient | None = None
+telegram_chat_id: str = ""
 
 
 def get_agent(user_id: str) -> ChatAgent:
     if user_id not in agents:
-        agents[user_id] = ChatAgent(api_key=api_key, model=MODEL, user_id=user_id, mcp_client=mcp_client)
+        agents[user_id] = ChatAgent(
+            api_key=api_key,
+            model=MODEL,
+            user_id=user_id,
+            mcp_client=mcp_client,
+            telegram_client=telegram_client,
+            telegram_chat_id=telegram_chat_id,
+        )
     return agents[user_id]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global api_key, mcp_client
+    global api_key, mcp_client, telegram_client, telegram_chat_id
     api_key = os.getenv("OPENROUTER_API_KEY", "")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set in .env")
@@ -58,10 +68,30 @@ async def lifespan(app: FastAPI):
         print(f"WARNING: MCP clients unavailable: {e}")
         mcp_client = None
 
+    telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    if os.getenv("TELEGRAM_BOT_TOKEN") and telegram_chat_id:
+        telegram_client = MCPTelegramClient()
+        try:
+            await telegram_client.connect()
+            print("Telegram MCP client connected")
+            interval = int(os.getenv("TELEGRAM_SUMMARY_INTERVAL", "60"))
+            result = await telegram_client.call_tool(
+                "start_periodic_summary",
+                {"chat_id": telegram_chat_id, "interval_seconds": interval},
+            )
+            print(f"Telegram periodic summary started: {result}")
+        except Exception as e:
+            print(f"WARNING: Telegram MCP client unavailable: {e}")
+            telegram_client = None
+    else:
+        print("INFO: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set — Telegram notifications disabled")
+
     yield
 
     if mcp_client:
         await mcp_client.disconnect()
+    if telegram_client:
+        await telegram_client.disconnect()
 
 
 app = FastAPI(title="Chat Agent", lifespan=lifespan)

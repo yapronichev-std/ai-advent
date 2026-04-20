@@ -1,6 +1,7 @@
 """MCP-клиент для подключения к telegram_mcp_server через stdio."""
 
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -26,6 +27,7 @@ class MCPTelegramClient:
         server_params = StdioServerParameters(
             command=sys.executable,
             args=[_SERVER_SCRIPT],
+            env=os.environ.copy(),
         )
 
         self._exit_stack = AsyncExitStack()

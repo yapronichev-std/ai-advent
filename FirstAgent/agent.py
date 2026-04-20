@@ -1,14 +1,18 @@
 import json
+import logging
 import time
 import httpx
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from config import load_system_prompt
 from invariants import InvariantStore
 from memory import MemoryStore
 from task_state import TaskFSM
 from mcp_weather import MCPWeatherClient
+from mcp_telegram_client import MCPTelegramClient
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -21,11 +25,16 @@ _BEHAVIOUR_KEYS = {"name", "language", "response_style"}
 
 class ChatAgent:
     def __init__(self, api_key: str, model: str, user_id: str = "default",
-                 mcp_client: Optional[MCPWeatherClient] = None):
+                 mcp_client: Optional[MCPWeatherClient] = None,
+                 telegram_client: Optional[MCPTelegramClient] = None,
+                 telegram_chat_id: str = ""):
         self.api_key = api_key
         self.model = model
         self.user_id = user_id
         self.mcp_client = mcp_client
+        self.telegram_client = telegram_client
+        self.telegram_chat_id = telegram_chat_id
+        self._llm_call_count: int = 0
 
         user_dir = Path("memory") / "users" / user_id
         self._history_file = user_dir / "history.json"
@@ -60,6 +69,8 @@ class ChatAgent:
 
         self._save_history()
         self._accumulate_tokens(usage)
+        await self._push_summary_to_server()
+
         return response_text, usage, diagram_urls
 
     def get_history(self) -> list[dict]:
@@ -484,6 +495,42 @@ class ChatAgent:
                 lines.append("  (empty)")
 
         return "\n".join(lines)
+
+    async def _push_summary_to_server(self) -> None:
+        """Отправить актуальный summary в MCP-сервер (update_summary).
+
+        Сервер сам рассылает его в Telegram раз в N секунд.
+        Если self.summary пуст — генерируем краткое резюме из последних сообщений.
+        """
+        if not self.telegram_client:
+            logger.debug("[Telegram] _push_summary_to_server: клиент не подключён, пропуск")
+            return
+
+        summary_text = self.summary or ""
+        if summary_text:
+            logger.debug("[Telegram] push existing summary (%d chars)", len(summary_text))
+        else:
+            recent = self.history[-10:]
+            if not recent:
+                logger.debug("[Telegram] история пуста, summary не отправляем")
+                return
+            lines = [f"{m['role'].upper()}: {m['content'][:120]}" for m in recent]
+            prompt = (
+                "Summarize the following conversation in 3-5 sentences, "
+                "highlighting key topics and outcomes:\n\n" + "\n".join(lines)
+            )
+            logger.debug("[Telegram] генерируем summary из %d сообщений", len(recent))
+            summary_text, _, _ = await self._call_api([{"role": "user", "content": prompt}])
+            logger.debug("[Telegram] сгенерировано (%d chars)", len(summary_text))
+
+        try:
+            result = await self.telegram_client.call_tool(
+                "update_summary",
+                {"text": f"[user: {self.user_id}]\n{summary_text}"},
+            )
+            logger.debug("[Telegram] update_summary result: %s", result)
+        except Exception as exc:
+            logger.warning("[Telegram] update_summary failed: %s", exc)
 
     async def _call_api(self, messages: list[dict]) -> tuple[str, dict, list[str]]:
         headers = {

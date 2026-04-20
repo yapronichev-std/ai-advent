@@ -4,7 +4,10 @@ MCP-сервер для отправки сообщений в Telegram чере
 Транспорт: stdio (стандарт для MCP-клиентов).
 
 Инструменты:
-  - send_telegram_message: отправить текстовое сообщение в указанный чат.
+  - send_telegram_message:      отправить разовое сообщение в чат.
+  - start_periodic_summary:     запустить фоновую отправку summary раз в N секунд.
+  - update_summary:             обновить текст summary (агент вызывает после каждого ответа).
+  - stop_periodic_summary:      остановить фоновую отправку.
 """
 
 import asyncio
@@ -15,8 +18,11 @@ import sys
 
 import httpx
 import mcp.types as types
+from dotenv import load_dotenv
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
+
+load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,11 +35,91 @@ TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}/sendMessage"
 
 app = Server("mcp-telegram")
 
+# ── Состояние периодической отправки ─────────────────────────────────────────
+
+_periodic: dict = {
+    "chat_id": "",
+    "summary": "",
+    "interval": 60,
+    "task": None,       # asyncio.Task | None
+}
+
+
+# ── Вспомогательные функции ───────────────────────────────────────────────────
 
 def _get_token() -> str | None:
-    """Вернуть токен из переменной окружения."""
     return os.environ.get("TELEGRAM_BOT_TOKEN")
 
+
+async def _send(chat_id: str, text: str) -> dict:
+    """Отправить сообщение через Bot API. Возвращает dict с результатом."""
+    token = _get_token()
+    if not token:
+        return {"error": "Переменная окружения TELEGRAM_BOT_TOKEN не задана."}
+
+    url = TELEGRAM_API_BASE.format(token=token)
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(url, json={"chat_id": chat_id, "text": text})
+            data = response.json()
+    except httpx.TimeoutException:
+        return {"error": "Таймаут при обращении к Telegram API."}
+    except httpx.RequestError as exc:
+        return {"error": f"Сетевая ошибка: {exc}"}
+
+    if not data.get("ok"):
+        error_code = data.get("error_code")
+        description = data.get("description", "Неизвестная ошибка")
+        return {"error": f"Telegram API [{error_code}]: {description}"}
+
+    return {"ok": True, "message_id": data["result"]["message_id"]}
+
+
+async def _periodic_loop() -> None:
+    """Фоновая задача: отправлять summary в Telegram каждые _periodic['interval'] секунд."""
+    logger.info(
+        "[periodic] задача запущена: chat_id=%s interval=%ds",
+        _periodic["chat_id"],
+        _periodic["interval"],
+    )
+    while True:
+        await asyncio.sleep(_periodic["interval"])
+
+        chat_id = _periodic["chat_id"]
+        summary = _periodic["summary"]
+
+        if not chat_id or not summary:
+            logger.debug("[periodic] пропуск — chat_id или summary пусты")
+            continue
+
+        logger.info(
+            "[periodic] отправка summary → chat_id=%s summary_len=%d",
+            chat_id,
+            len(summary),
+        )
+        result = await _send(chat_id, f"⏱ Periodic summary:\n\n{summary}")
+        if "error" in result:
+            logger.warning("[periodic] ошибка отправки: %s", result["error"])
+        else:
+            logger.info("[periodic] доставлено, message_id=%s", result.get("message_id"))
+
+
+def _start_task() -> None:
+    """Создать asyncio-задачу периодической отправки (отменяет предыдущую)."""
+    _stop_task()
+    _periodic["task"] = asyncio.get_event_loop().create_task(_periodic_loop())
+    logger.info("[periodic] asyncio task создана")
+
+
+def _stop_task() -> None:
+    task = _periodic["task"]
+    if task and not task.done():
+        task.cancel()
+        logger.info("[periodic] asyncio task отменена")
+    _periodic["task"] = None
+
+
+# ── Описание инструментов ─────────────────────────────────────────────────────
 
 @app.list_tools()
 async def list_tools() -> list[types.Tool]:
@@ -41,84 +127,116 @@ async def list_tools() -> list[types.Tool]:
         types.Tool(
             name="send_telegram_message",
             description=(
-                "Отправить текстовое сообщение в Telegram-чат через Bot API. "
-                "Требует наличия переменной окружения TELEGRAM_BOT_TOKEN."
+                "Отправить разовое текстовое сообщение в Telegram-чат через Bot API."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "chat_id": {
-                        "type": "string",
-                        "description": "ID чата или username (например, '123456789' или '@mychannel').",
-                    },
-                    "text": {
-                        "type": "string",
-                        "description": "Текст отправляемого сообщения.",
-                    },
+                    "chat_id": {"type": "string", "description": "ID чата или @username."},
+                    "text":    {"type": "string", "description": "Текст сообщения."},
                 },
                 "required": ["chat_id", "text"],
             },
-        )
+        ),
+        types.Tool(
+            name="start_periodic_summary",
+            description=(
+                "Запустить фоновую отправку summary в Telegram с заданным интервалом. "
+                "Каждые interval_seconds секунд сервер сам отправляет последний summary."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "chat_id":          {"type": "string", "description": "ID чата."},
+                    "interval_seconds": {"type": "integer", "description": "Интервал в секундах (по умолчанию 60).", "default": 60},
+                },
+                "required": ["chat_id"],
+            },
+        ),
+        types.Tool(
+            name="update_summary",
+            description=(
+                "Обновить текст summary, который будет отправлен при следующей периодической отправке. "
+                "Агент вызывает этот инструмент после каждого ответа пользователю."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Актуальный текст summary."},
+                },
+                "required": ["text"],
+            },
+        ),
+        types.Tool(
+            name="stop_periodic_summary",
+            description="Остановить фоновую периодическую отправку summary.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
     ]
 
 
+# ── Обработка вызовов ─────────────────────────────────────────────────────────
+
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
-    if name != "send_telegram_message":
-        return [types.TextContent(type="text", text=json.dumps({"error": f"Unknown tool: '{name}'"}))]
 
-    chat_id = arguments.get("chat_id", "").strip()
-    text = arguments.get("text", "").strip()
+    # ── send_telegram_message ──────────────────────────────────────────────
+    if name == "send_telegram_message":
+        chat_id = arguments.get("chat_id", "").strip()
+        text    = arguments.get("text", "").strip()
+        if not chat_id or not text:
+            return _err("Параметры 'chat_id' и 'text' обязательны.")
+        logger.info("send_telegram_message → chat_id=%s text_len=%d", chat_id, len(text))
+        result = await _send(chat_id, text)
+        if "error" in result:
+            logger.warning("send failed: %s", result["error"])
+        else:
+            logger.info("send ok, message_id=%s", result.get("message_id"))
+        return _ok(result)
 
-    if not chat_id or not text:
-        return [types.TextContent(
-            type="text",
-            text=json.dumps({"error": "Параметры 'chat_id' и 'text' обязательны и не должны быть пустыми."}),
-        )]
+    # ── start_periodic_summary ─────────────────────────────────────────────
+    if name == "start_periodic_summary":
+        chat_id  = arguments.get("chat_id", "").strip()
+        interval = int(arguments.get("interval_seconds", 60))
+        if not chat_id:
+            return _err("Параметр 'chat_id' обязателен.")
+        _periodic["chat_id"]  = chat_id
+        _periodic["interval"] = max(interval, 10)   # минимум 10 секунд
+        _start_task()
+        logger.info(
+            "start_periodic_summary: chat_id=%s interval=%ds",
+            chat_id, _periodic["interval"],
+        )
+        return _ok({"ok": True, "chat_id": chat_id, "interval_seconds": _periodic["interval"]})
 
-    token = _get_token()
-    if not token:
-        return [types.TextContent(
-            type="text",
-            text=json.dumps({"error": "Переменная окружения TELEGRAM_BOT_TOKEN не задана."}),
-        )]
+    # ── update_summary ─────────────────────────────────────────────────────
+    if name == "update_summary":
+        text = arguments.get("text", "").strip()
+        if not text:
+            return _err("Параметр 'text' обязателен.")
+        _periodic["summary"] = text
+        logger.debug("update_summary: summary_len=%d", len(text))
+        return _ok({"ok": True, "summary_len": len(text)})
 
-    url = TELEGRAM_API_BASE.format(token=token)
-    payload = {"chat_id": chat_id, "text": text}
+    # ── stop_periodic_summary ──────────────────────────────────────────────
+    if name == "stop_periodic_summary":
+        _stop_task()
+        _periodic["summary"] = ""
+        logger.info("stop_periodic_summary: задача остановлена")
+        return _ok({"ok": True})
 
-    logger.info("send_telegram_message → chat_id=%s text_len=%d", chat_id, len(text))
+    return _err(f"Unknown tool: '{name}'")
 
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(url, json=payload)
-            data = response.json()
-    except httpx.TimeoutException:
-        return [types.TextContent(
-            type="text",
-            text=json.dumps({"error": "Таймаут при обращении к Telegram API."}),
-        )]
-    except httpx.RequestError as exc:
-        return [types.TextContent(
-            type="text",
-            text=json.dumps({"error": f"Сетевая ошибка: {exc}"}),
-        )]
 
-    if not data.get("ok"):
-        error_code = data.get("error_code")
-        description = data.get("description", "Неизвестная ошибка")
-        logger.warning("Telegram API error %s: %s", error_code, description)
-        return [types.TextContent(
-            type="text",
-            text=json.dumps({"error": f"Telegram API [{error_code}]: {description}"}),
-        )]
+def _ok(data: dict) -> list[types.TextContent]:
+    return [types.TextContent(type="text", text=json.dumps(data, ensure_ascii=False))]
 
-    message_id = data["result"]["message_id"]
-    logger.info("Сообщение доставлено, message_id=%s", message_id)
-    return [types.TextContent(
-        type="text",
-        text=json.dumps({"ok": True, "message_id": message_id}),
-    )]
 
+def _err(msg: str) -> list[types.TextContent]:
+    return [types.TextContent(type="text", text=json.dumps({"error": msg}, ensure_ascii=False))]
+
+
+# ── Точка входа ───────────────────────────────────────────────────────────────
 
 async def main() -> None:
     async with stdio_server() as (read_stream, write_stream):
