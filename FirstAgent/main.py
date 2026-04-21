@@ -27,7 +27,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
-MODEL = "arcee-ai/trinity-large-preview:free"
+#MODEL = "arcee-ai/trinity-large-preview:free"
+MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 
 api_key: str
 agents: dict[str, ChatAgent] = {}
