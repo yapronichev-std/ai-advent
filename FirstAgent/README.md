@@ -91,6 +91,77 @@ python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 ---
 
+### Day 18 — MCP-сервер поиска и пайплайн «поиск → диаграмма → Telegram»
+
+Добавлен `mcp_search_server` и полный автоматический пайплайн для запросов на построение диаграмм: агент сам находит актуальные практики, генерирует диаграмму и отправляет её в Telegram.
+
+#### Новые файлы
+
+| Файл | Назначение |
+|---|---|
+| `mcp_search_server/server.py` | MCP-сервер (stdio) с инструментом `search_and_analyze` — поиск через Brave/SerpAPI + анализ через OpenRouter |
+| `mcp_search_client.py` | MCP-клиент для search-сервера (запускает subprocess, аналог `mcp_drawio_client.py`) |
+| `diagram_pipeline.py` | Класс `DiagramPipeline` — оркестрирует 4-шаговый пайплайн |
+
+#### Изменённые файлы
+
+- **`agent.py`** — добавлены параметр `diagram_pipeline`, метод `_classify_as_diagram` и маршрутизация в `send_message`
+- **`main.py`** — lifespan подключает `MCPSearchClient`, создаёт `DiagramPipeline`
+- **`.env.example`** — новые переменные для поиска и пайплайна
+
+#### Пайплайн (для запросов «построй диаграмму...»)
+
+```
+Пользовательский запрос
+        │
+        ▼
+_classify_as_diagram()        ← LLM: YES/NO, таймаут 10 с
+        │ YES
+        ▼
+mcp-search: search_and_analyze    ← Brave/SerpAPI + OpenRouter, таймаут 45 с
+        │                           fallback: продолжить без поиска
+        ▼
+OpenRouter: генерация JSON-аргументов для drawio    ← таймаут 30 с
+        │                           fallback: DRAWIO_FALLBACK_MODEL
+        ▼
+mcp-drawio: generate_*_diagram    ← таймаут 60 с
+        │                           retry с другой моделью при ошибке
+        ▼
+mcp-telegram: send_telegram_message    ← таймаут 30 с
+        │                               fallback: файл сохранён локально
+        ▼
+Ответ пользователю: «Диаграмма готова и отправлена в Telegram»
+```
+
+Для запросов без ключевого слова «диаграмма» поведение агента не изменилось.
+
+#### Инструмент mcp-search
+
+**`search_and_analyze(query, analysis_instruction, num_results=5)`**
+
+Использует OpenRouter с параметром `plugins: [{"id": "web"}]`, который добавляет веб-поиск к любой совместимой модели. Отдельный API-ключ поискового сервиса не нужен — достаточно уже имеющегося `OPENROUTER_API_KEY`.
+
+Рекомендуется использовать онлайн-модели:
+- `perplexity/sonar-pro` — встроенный поиск Perplexity (по умолчанию)
+- `openai/gpt-4o:online` — GPT-4o + web-плагин OpenRouter
+- `anthropic/claude-3.5-sonnet:online`
+
+#### Новые переменные окружения
+
+| Переменная | По умолчанию | Описание |
+|---|---|---|
+| `SEARCH_MODEL` | `perplexity/sonar-pro` | Онлайн-модель OpenRouter для поиска и анализа |
+| `DRAWIO_FALLBACK_MODEL` | `openai/gpt-4o` | Резервная модель при ошибке mcp-drawio |
+
+#### Архитектурные решения
+
+- **Пайплайн — код, не tool-calling**: шаги выполняются явным кодом в `DiagramPipeline`, а не через LLM tool-choice. Это даёт предсказуемость и соблюдение таймаутов.
+- **Классификация отделена от основного потока**: `_classify_as_diagram` делает лёгкий LLM-вызов без истории, не загрязняя контекст агента.
+- **`MCPSearchClient` зарегистрирован в lifespan** для единообразного lifecycle (connect/disconnect), но `DiagramPipeline` вызывает его напрямую, минуя LLM tool-choice.
+- **Все шаги async/await** с явными таймаутами через `asyncio.wait_for`.
+
+---
+
 ### Предыдущие доработки
 
 | День | Фича |

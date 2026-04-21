@@ -13,9 +13,11 @@ from pydantic import BaseModel
 
 from agent import ChatAgent
 from config import load_system_prompt, save_system_prompt
+from diagram_pipeline import DiagramPipeline
 from invariants import InvariantStore
 from mcp_drawio_client import MCPDrawioClient
 from mcp_multi import MultiMCPClient
+from mcp_search_client import MCPSearchClient
 from mcp_telegram_client import MCPTelegramClient
 from mcp_weather import MCPWeatherClient
 from profiles import UserProfileManager
@@ -35,8 +37,10 @@ agents: dict[str, ChatAgent] = {}
 profile_manager = UserProfileManager()
 invariant_store = InvariantStore()
 mcp_client: MultiMCPClient | None = None
+search_client: MCPSearchClient | None = None
 telegram_client: MCPTelegramClient | None = None
 telegram_chat_id: str = ""
+diagram_pipeline: DiagramPipeline | None = None
 
 
 def get_agent(user_id: str) -> ChatAgent:
@@ -48,17 +52,19 @@ def get_agent(user_id: str) -> ChatAgent:
             mcp_client=mcp_client,
             telegram_client=telegram_client,
             telegram_chat_id=telegram_chat_id,
+            diagram_pipeline=diagram_pipeline,
         )
     return agents[user_id]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global api_key, mcp_client, telegram_client, telegram_chat_id
+    global api_key, mcp_client, search_client, telegram_client, telegram_chat_id, diagram_pipeline
     api_key = os.getenv("OPENROUTER_API_KEY", "")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set in .env")
 
+    # ── MCP drawio ────────────────────────────────────────────────────────────
     mcp_client = MultiMCPClient([
         MCPDrawioClient(),
     ])
@@ -69,6 +75,16 @@ async def lifespan(app: FastAPI):
         print(f"WARNING: MCP clients unavailable: {e}")
         mcp_client = None
 
+    # ── MCP search ────────────────────────────────────────────────────────────
+    search_client = MCPSearchClient()
+    try:
+        await search_client.connect()
+        print(f"Search MCP client connected — tools: {[t['function']['name'] for t in search_client.tools]}")
+    except Exception as e:
+        print(f"WARNING: Search MCP client unavailable: {e}")
+        search_client = None
+
+    # ── Telegram ──────────────────────────────────────────────────────────────
     telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
     if os.getenv("TELEGRAM_BOT_TOKEN") and telegram_chat_id:
         telegram_client = MCPTelegramClient()
@@ -87,10 +103,30 @@ async def lifespan(app: FastAPI):
     else:
         print("INFO: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set — Telegram notifications disabled")
 
+    # ── Diagram pipeline ──────────────────────────────────────────────────────
+    fallback_model = os.getenv("DRAWIO_FALLBACK_MODEL", "openai/gpt-4o")
+    diagram_pipeline = DiagramPipeline(
+        api_key=api_key,
+        model=MODEL,
+        search_client=search_client,
+        drawio_client=mcp_client,
+        telegram_client=telegram_client,
+        telegram_chat_id=telegram_chat_id,
+        fallback_model=fallback_model,
+    )
+    print(
+        f"DiagramPipeline ready  "
+        f"search={'on' if search_client else 'off'}  "
+        f"drawio={'on' if mcp_client else 'off'}  "
+        f"telegram={'on' if telegram_client else 'off'}"
+    )
+
     yield
 
     if mcp_client:
         await mcp_client.disconnect()
+    if search_client:
+        await search_client.disconnect()
     if telegram_client:
         await telegram_client.disconnect()
 

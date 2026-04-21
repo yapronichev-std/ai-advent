@@ -8,6 +8,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 from config import load_system_prompt
+from diagram_pipeline import DiagramPipeline
 from invariants import InvariantStore
 from memory import MemoryStore
 from task_state import TaskFSM
@@ -27,13 +28,15 @@ class ChatAgent:
     def __init__(self, api_key: str, model: str, user_id: str = "default",
                  mcp_client: Optional[MCPWeatherClient] = None,
                  telegram_client: Optional[MCPTelegramClient] = None,
-                 telegram_chat_id: str = ""):
+                 telegram_chat_id: str = "",
+                 diagram_pipeline: Optional[DiagramPipeline] = None):
         self.api_key = api_key
         self.model = model
         self.user_id = user_id
         self.mcp_client = mcp_client
         self.telegram_client = telegram_client
         self.telegram_chat_id = telegram_chat_id
+        self.diagram_pipeline = diagram_pipeline
         self._llm_call_count: int = 0
 
         user_dir = Path("memory") / "users" / user_id
@@ -54,6 +57,27 @@ class ChatAgent:
             self.history.append({"role": "assistant", "content": command_response})
             self._save_history()
             return command_response, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "response_time_ms": 0}, []
+
+        # Проверяем, является ли запрос диаграммным, и запускаем пайплайн
+        if self.diagram_pipeline:
+            t0 = time.monotonic()
+            is_diagram = await self._classify_as_diagram(user_message)
+            if is_diagram:
+                logger.info("[agent] diagram request detected — running pipeline")
+                self.history.append({"role": "user", "content": user_message})
+                pipeline_response, diagram_urls = await self.diagram_pipeline.execute(user_message)
+                self.history.append({"role": "assistant", "content": pipeline_response})
+                usage = {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "response_time_ms": round((time.monotonic() - t0) * 1000),
+                }
+                if len(self.history) > MAX_HISTORY:
+                    await self._compress_history()
+                self._save_history()
+                await self._push_summary_to_server()
+                return pipeline_response, usage, diagram_urls
 
         self.history.append({"role": "user", "content": user_message})
 
@@ -531,6 +555,41 @@ class ChatAgent:
             logger.debug("[Telegram] update_summary result: %s", result)
         except Exception as exc:
             logger.warning("[Telegram] update_summary failed: %s", exc)
+
+    async def _classify_as_diagram(self, user_message: str) -> bool:
+        """
+        Быстрый LLM-вызов: определяет, связан ли запрос с построением диаграммы.
+        Возвращает True, если пайплайн должен быть запущен.
+        """
+        prompt = (
+            "Определи, просит ли пользователь построить UML-диаграмму, схему, "
+            "граф, диаграмму последовательности, классов, компонентов или другое "
+            "визуальное представление архитектуры/процесса.\n\n"
+            f"Запрос пользователя: \"{user_message}\"\n\n"
+            "Ответь СТРОГО одним словом: YES или NO."
+        )
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    OPENROUTER_URL,
+                    headers=headers,
+                    json={
+                        "model": self.model,
+                        "messages": [{"role": "user", "content": prompt}],
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            answer = data["choices"][0]["message"]["content"].strip().upper()
+            logger.debug("[agent] classify_as_diagram → %r", answer)
+            return answer.startswith("YES")
+        except Exception as exc:
+            logger.warning("[agent] classify_as_diagram error: %s", exc)
+            return False
 
     async def _call_api(self, messages: list[dict]) -> tuple[str, dict, list[str]]:
         headers = {
