@@ -64,44 +64,42 @@ async def lifespan(app: FastAPI):
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set in .env")
 
-    # ── MCP drawio ────────────────────────────────────────────────────────────
-    mcp_client = MultiMCPClient([
-        MCPDrawioClient(),
-    ])
+    # ── Создаём все MCP-клиенты ───────────────────────────────────────────────
+    _drawio = MCPDrawioClient()
+    _search = MCPSearchClient()
+
+    telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    _telegram: MCPTelegramClient | None = None
+    if os.getenv("TELEGRAM_BOT_TOKEN") and telegram_chat_id:
+        _telegram = MCPTelegramClient()
+    else:
+        print("INFO: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set — Telegram notifications disabled")
+
+    all_clients = [_drawio, _search] + ([_telegram] if _telegram else [])
+
+    # ── Подключаем все через MultiMCPClient ───────────────────────────────────
+    mcp_client = MultiMCPClient(all_clients)
     try:
         await mcp_client.connect()
-        print(f"MCP tools loaded: {[t['function']['name'] for t in mcp_client.tools]}")
+        print(f"MCP tools loaded ({len(mcp_client.tools)}): {[t['function']['name'] for t in mcp_client.tools]}")
     except Exception as e:
         print(f"WARNING: MCP clients unavailable: {e}")
         mcp_client = None
 
-    # ── MCP search ────────────────────────────────────────────────────────────
-    search_client = MCPSearchClient()
-    try:
-        await search_client.connect()
-        print(f"Search MCP client connected — tools: {[t['function']['name'] for t in search_client.tools]}")
-    except Exception as e:
-        print(f"WARNING: Search MCP client unavailable: {e}")
-        search_client = None
+    # ── Отдельные ссылки для DiagramPipeline и Telegram-хуков ────────────────
+    search_client = _search if _search._session else None
+    telegram_client = _telegram if (_telegram and _telegram._session) else None
 
-    # ── Telegram ──────────────────────────────────────────────────────────────
-    telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
-    if os.getenv("TELEGRAM_BOT_TOKEN") and telegram_chat_id:
-        telegram_client = MCPTelegramClient()
+    if telegram_client:
         try:
-            await telegram_client.connect()
-            print("Telegram MCP client connected")
             interval = int(os.getenv("TELEGRAM_SUMMARY_INTERVAL", "60"))
             result = await telegram_client.call_tool(
                 "start_periodic_summary",
                 {"chat_id": telegram_chat_id, "interval_seconds": interval},
             )
-            print(f"Telegram periodic summary started: {result}")
+            print(f"Telegram MCP client connected. Periodic summary started: {result}")
         except Exception as e:
-            print(f"WARNING: Telegram MCP client unavailable: {e}")
-            telegram_client = None
-    else:
-        print("INFO: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set — Telegram notifications disabled")
+            print(f"WARNING: Telegram periodic summary failed: {e}")
 
     # ── Diagram pipeline ──────────────────────────────────────────────────────
     fallback_model = os.getenv("DRAWIO_FALLBACK_MODEL", "openai/gpt-4o")
@@ -125,10 +123,6 @@ async def lifespan(app: FastAPI):
 
     if mcp_client:
         await mcp_client.disconnect()
-    if search_client:
-        await search_client.disconnect()
-    if telegram_client:
-        await telegram_client.disconnect()
 
 
 app = FastAPI(title="Chat Agent", lifespan=lifespan)
@@ -167,6 +161,11 @@ class SystemPromptRequest(BaseModel):
     prompt: str
 
 
+class DemoRequest(BaseModel):
+    topic: str = "Telegram bot"
+    user_id: str = "default"
+
+
 class InvariantRequest(BaseModel):
     text: str
 
@@ -195,6 +194,36 @@ LongTermCategory = Literal["profile", "decisions", "knowledge"]
 @app.get("/")
 async def index():
     return FileResponse("static/index.html")
+
+
+# ── Demo ─────────────────────────────────────────────────────────────────────
+
+@app.post("/demo", response_model=MessageResponse)
+async def run_demo(request: DemoRequest):
+    """
+    Длинный флоу взаимодействия с несколькими MCP-серверами:
+    погода → поиск → диаграмма → Telegram.
+    """
+    agent = get_agent(request.user_id)
+    chat_id = telegram_chat_id or "не задан"
+    prompt = (
+        f"Выполни следующие шаги по порядку для темы «{request.topic}»:\n"
+        f"1. Найди актуальную информацию через search-инструмент: возможности, "
+        f"архитектура, best practices.\n"
+        f"2. Построй компонентную диаграмму, отражающую архитектуру и ключевые "
+        f"компоненты Telegram-бота (клиент, сервер, MCP-серверы, хранилище).\n"
+        f"3. Отправь итоговый отчёт с диаграммой в Telegram. "
+        f"Используй chat_id={chat_id}. Не спрашивай его у пользователя.\n"
+        f"После завершения всех шагов кратко опиши результат."
+    )
+    response_text, usage, diagram_urls = await agent.send_message(prompt)
+    return MessageResponse(
+        response=response_text,
+        history=agent.get_history(),
+        usage=usage,
+        user_id=request.user_id,
+        diagram_urls=diagram_urls,
+    )
 
 
 # ── Chat ─────────────────────────────────────────────────────────────────────

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -19,6 +20,7 @@ from mcp_telegram_client import MCPTelegramClient
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_TOKEN_LIMIT = 1_000_000
 MAX_HISTORY = 10
+MAX_TOOL_RESULT_CHARS = 6_000   # обрезаем тяжёлые ответы (search) перед отправкой в LLM
 
 # Profile keys that directly shape the system prompt behaviour
 _BEHAVIOUR_KEYS = {"name", "language", "response_style"}
@@ -51,7 +53,7 @@ class ChatAgent:
         self.invariants = InvariantStore()
 
     async def send_message(self, user_message: str) -> tuple[str, dict, list[str]]:
-        command_response = self._handle_command(user_message)
+        command_response = await self._handle_command(user_message)
         if command_response is not None:
             self.history.append({"role": "user", "content": user_message})
             self.history.append({"role": "assistant", "content": command_response})
@@ -222,7 +224,7 @@ class ChatAgent:
 
     # ── Команды ───────────────────────────────────────────────────────────
 
-    def _handle_command(self, message: str) -> Optional[str]:
+    async def _handle_command(self, message: str) -> Optional[str]:
         """Parse a /command message. Returns response text or None if not a command."""
         stripped = message.strip()
         if not stripped.startswith("/"):
@@ -453,9 +455,32 @@ class ChatAgent:
             self.invariants.set_active(inv_id, True)
             return "Invariant enabled."
 
+        if cmd == "/report":
+            topic = args.strip() if args.strip() else "Telegram bot"
+            chat_id = self.telegram_chat_id or "не задан"
+            prompt = (
+                f"Выполни следующие шаги по порядку для темы «{topic}»:\n"
+                f"1. Найди актуальную информацию через search-инструмент: возможности, "
+                f"архитектура, best practices.\n"
+                f"2. Построй компонентную диаграмму, отражающую архитектуру и ключевые "
+                f"компоненты Telegram-бота (клиент, сервер, MCP-серверы, хранилище).\n"
+                f"3. Отправь итоговый отчёт с диаграммой в Telegram. "
+                f"Используй chat_id={chat_id}. Не спрашивай его у пользователя.\n"
+                f"После завершения всех шагов кратко опиши результат."
+            )
+            messages = self._build_messages() + [{"role": "user", "content": prompt}]
+            self.history.append({"role": "user", "content": f"/report {topic}"})
+            response_text, _, _ = await self._call_api(messages)
+            self.history.append({"role": "assistant", "content": response_text})
+            self._save_history()
+            return response_text
+
         if cmd == "/help":
             return (
-                "Task FSM commands:\n"
+                "Multi-server demo:\n"
+                "  /report [topic]           — search + diagram + Telegram (multi-MCP flow)\n"
+                "                              по умолчанию: «Telegram bot»\n"
+                "\nTask FSM commands:\n"
                 "  /task <desc>              — start a task (state: planning)\n"
                 "  /task-steps <N>           — set N steps, move to execution  [planning only]\n"
                 "  /task-next [desc]         — advance to next step             [execution only]\n"
@@ -531,21 +556,10 @@ class ChatAgent:
             return
 
         summary_text = self.summary or ""
-        if summary_text:
-            logger.debug("[Telegram] push existing summary (%d chars)", len(summary_text))
-        else:
-            recent = self.history[-10:]
-            if not recent:
-                logger.debug("[Telegram] история пуста, summary не отправляем")
-                return
-            lines = [f"{m['role'].upper()}: {m['content'][:120]}" for m in recent]
-            prompt = (
-                "Summarize the following conversation in 3-5 sentences, "
-                "highlighting key topics and outcomes:\n\n" + "\n".join(lines)
-            )
-            logger.debug("[Telegram] генерируем summary из %d сообщений", len(recent))
-            summary_text, _, _ = await self._call_api([{"role": "user", "content": prompt}])
-            logger.debug("[Telegram] сгенерировано (%d chars)", len(summary_text))
+        if not summary_text:
+            logger.debug("[Telegram] summary пуст, пропускаем push")
+            return
+        logger.debug("[Telegram] push existing summary (%d chars)", len(summary_text))
 
         try:
             result = await self.telegram_client.call_tool(
@@ -574,15 +588,22 @@ class ChatAgent:
                 "Content-Type": "application/json",
             }
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(
-                    OPENROUTER_URL,
-                    headers=headers,
-                    json={
-                        "model": self.model,
-                        "messages": [{"role": "user", "content": prompt}],
-                    },
-                )
-                resp.raise_for_status()
+                for attempt in range(3):
+                    resp = await client.post(
+                        OPENROUTER_URL,
+                        headers=headers,
+                        json={
+                            "model": self.model,
+                            "messages": [{"role": "user", "content": prompt}],
+                        },
+                    )
+                    if resp.status_code == 429:
+                        wait = 2 ** attempt
+                        logger.warning("[agent] classify 429, retrying in %ds", wait)
+                        await asyncio.sleep(wait)
+                        continue
+                    resp.raise_for_status()
+                    break
                 data = resp.json()
             answer = data["choices"][0]["message"]["content"].strip().upper()
             logger.debug("[agent] classify_as_diagram → %r", answer)
@@ -609,8 +630,15 @@ class ChatAgent:
                     payload["tools"] = tools
                     payload["tool_choice"] = "auto"
 
-                response = await client.post(OPENROUTER_URL, headers=headers, json=payload)
-                response.raise_for_status()
+                for attempt in range(5):
+                    response = await client.post(OPENROUTER_URL, headers=headers, json=payload)
+                    if response.status_code == 429:
+                        wait = 2 ** attempt
+                        logger.warning("[agent] 429 rate limit, retrying in %ds (attempt %d/5)", wait, attempt + 1)
+                        await asyncio.sleep(wait)
+                        continue
+                    response.raise_for_status()
+                    break
                 data = response.json()
                 total_usage = data.get("usage", {})
 
@@ -635,6 +663,9 @@ class ChatAgent:
                             content_for_llm = json.dumps(result_obj, ensure_ascii=False)
                         except (json.JSONDecodeError, AttributeError):
                             content_for_llm = result
+
+                        if len(content_for_llm) > MAX_TOOL_RESULT_CHARS:
+                            content_for_llm = content_for_llm[:MAX_TOOL_RESULT_CHARS] + "... [truncated]"
 
                         current_messages.append({
                             "role": "tool",
