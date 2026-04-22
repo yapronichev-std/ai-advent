@@ -265,45 +265,63 @@ class DiagramPipeline:
     async def _step_telegram(
         self, user_query: str, diagram_result: Optional[dict], summary: str
     ) -> str:
-        """Шаг 4: отправка уведомления в Telegram. Таймаут 30 сек."""
+        """Шаг 4: отправка файла диаграммы в Telegram. Таймаут 30 сек."""
         if not self.telegram_client or not self.telegram_chat_id:
             logger.info("[pipeline] Telegram не настроен, пропускаем")
             return "(Telegram не настроен)"
 
-        if diagram_result:
-            diagram_url = diagram_result.get("diagram_url", "")
-            filename = diagram_result.get("filename", "diagram")
-            text = (
-                f"По запросу «{user_query[:100]}» построена UML-диаграмма.\n\n"
-                f"{summary}\n\n"
-                f"Файл: {filename}\n"
-                f"Открыть: {diagram_url}"
-            )
-        else:
-            text = (
-                f"По запросу «{user_query[:100]}» диаграмма не была построена "
-                f"(ошибка mcp-drawio)."
-            )
-
         logger.info("[pipeline] step4: telegram  chat_id=%s", self.telegram_chat_id)
         t0 = time.monotonic()
+
+        if not diagram_result:
+            # Диаграмма не построена — шлём текстовое уведомление
+            text = f"По запросу «{user_query[:100]}» диаграмма не была построена (ошибка mcp-drawio)."
+            try:
+                await asyncio.wait_for(
+                    self.telegram_client.call_tool(
+                        "send_telegram_message",
+                        {"chat_id": self.telegram_chat_id, "text": text},
+                    ),
+                    timeout=30.0,
+                )
+            except Exception as exc:
+                logger.warning("[pipeline] step4 text send error: %s", exc)
+            return ""
+
+        saved_path = diagram_result.get("saved_path", "")
+        filename = diagram_result.get("filename", "diagram.drawio")
+        caption = (
+            f"UML-диаграмма по запросу:\n«{user_query[:200]}»\n\n{summary}"
+        )
+
         try:
-            await asyncio.wait_for(
+            raw = await asyncio.wait_for(
                 self.telegram_client.call_tool(
-                    "send_telegram_message",
-                    {"chat_id": self.telegram_chat_id, "text": text},
+                    "send_telegram_document",
+                    {
+                        "chat_id": self.telegram_chat_id,
+                        "file_path": saved_path,
+                        "caption": caption,
+                    },
                 ),
                 timeout=30.0,
             )
             elapsed = round((time.monotonic() - t0) * 1000)
-            logger.info("[pipeline] step4 done  elapsed=%dms", elapsed)
+
+            result = json.loads(raw)
+            if "error" in result:
+                logger.warning("[pipeline] step4 send_document error: %s", result["error"])
+                return f"(Telegram: {result['error']} — файл сохранён локально: {filename})"
+
+            logger.info("[pipeline] step4 done  elapsed=%dms  message_id=%s", elapsed, result.get("message_id"))
             return ""
+
         except asyncio.TimeoutError:
             logger.warning("[pipeline] step4 telegram timeout (30s)")
-            return "(Telegram: таймаут отправки — файл сохранён локально)"
+            return f"(Telegram: таймаут — файл сохранён локально: {filename})"
         except Exception as exc:
             logger.warning("[pipeline] step4 telegram error: %s", exc)
-            return f"(Telegram: ошибка отправки — файл сохранён локально)"
+            return f"(Telegram: ошибка отправки — файл сохранён локально: {filename})"
 
     # ── Вспомогательные методы ────────────────────────────────────────────────
 

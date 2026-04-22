@@ -32,6 +32,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}/sendMessage"
+TELEGRAM_API_DOCUMENT = "https://api.telegram.org/bot{token}/sendDocument"
 
 app = Server("mcp-telegram")
 
@@ -64,6 +65,40 @@ async def _send(chat_id: str, text: str) -> dict:
             data = response.json()
     except httpx.TimeoutException:
         return {"error": "Таймаут при обращении к Telegram API."}
+    except httpx.RequestError as exc:
+        return {"error": f"Сетевая ошибка: {exc}"}
+
+    if not data.get("ok"):
+        error_code = data.get("error_code")
+        description = data.get("description", "Неизвестная ошибка")
+        return {"error": f"Telegram API [{error_code}]: {description}"}
+
+    return {"ok": True, "message_id": data["result"]["message_id"]}
+
+
+async def _send_document(chat_id: str, file_path: str, caption: str = "") -> dict:
+    """Отправить файл через Bot API (sendDocument). Возвращает dict с результатом."""
+    token = _get_token()
+    if not token:
+        return {"error": "Переменная окружения TELEGRAM_BOT_TOKEN не задана."}
+
+    from pathlib import Path
+    path = Path(file_path)
+    if not path.exists():
+        return {"error": f"Файл не найден: {file_path}"}
+
+    url = TELEGRAM_API_DOCUMENT.format(token=token)
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            with path.open("rb") as f:
+                response = await client.post(
+                    url,
+                    data={"chat_id": chat_id, "caption": caption},
+                    files={"document": (path.name, f, "application/octet-stream")},
+                )
+            data = response.json()
+    except httpx.TimeoutException:
+        return {"error": "Таймаут при отправке файла в Telegram."}
     except httpx.RequestError as exc:
         return {"error": f"Сетевая ошибка: {exc}"}
 
@@ -139,6 +174,22 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="send_telegram_document",
+            description=(
+                "Отправить файл (документ) в Telegram-чат через Bot API (sendDocument). "
+                "Принимает абсолютный путь к файлу на диске."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "chat_id":   {"type": "string", "description": "ID чата или @username."},
+                    "file_path": {"type": "string", "description": "Абсолютный путь к файлу."},
+                    "caption":   {"type": "string", "description": "Подпись к файлу (необязательно)."},
+                },
+                "required": ["chat_id", "file_path"],
+            },
+        ),
+        types.Tool(
             name="start_periodic_summary",
             description=(
                 "Запустить фоновую отправку summary в Telegram с заданным интервалом. "
@@ -192,6 +243,21 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             logger.warning("send failed: %s", result["error"])
         else:
             logger.info("send ok, message_id=%s", result.get("message_id"))
+        return _ok(result)
+
+    # ── send_telegram_document ────────────────────────────────────────────
+    if name == "send_telegram_document":
+        chat_id   = arguments.get("chat_id", "").strip()
+        file_path = arguments.get("file_path", "").strip()
+        caption   = arguments.get("caption", "")
+        if not chat_id or not file_path:
+            return _err("Параметры 'chat_id' и 'file_path' обязательны.")
+        logger.info("send_telegram_document → chat_id=%s file=%s", chat_id, file_path)
+        result = await _send_document(chat_id, file_path, caption)
+        if "error" in result:
+            logger.warning("send_document failed: %s", result["error"])
+        else:
+            logger.info("send_document ok, message_id=%s", result.get("message_id"))
         return _ok(result)
 
     # ── start_periodic_summary ─────────────────────────────────────────────
