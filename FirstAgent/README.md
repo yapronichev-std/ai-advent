@@ -162,6 +162,94 @@ mcp-telegram: send_telegram_message    ← таймаут 30 с
 
 ---
 
+### Day 20 — RAG система на базе Ollama + ChromaDB
+
+Реализована полноценная RAG (Retrieval-Augmented Generation) система: агент автоматически находит релевантные документы из локального хранилища и добавляет их в контекст перед каждым ответом LLM.
+
+#### Стек
+
+| Компонент | Технология |
+|---|---|
+| Эмбеддинги | Ollama (`nomic-embed-text`) — локально, без API |
+| Векторное хранилище | ChromaDB (persistent, cosine similarity) |
+| Хранение данных | `memory/rag/` — сохраняется между перезапусками |
+
+#### Новые файлы
+
+| Файл | Назначение |
+|---|---|
+| `rag.py` | `RAGStore` — чанкинг, эмбеддинги через Ollama, CRUD операции с ChromaDB |
+
+#### Изменённые файлы
+
+- **`agent.py`** — `ChatAgent` принимает `rag_store`; `send_message` делает семантический поиск до вызова LLM; `_build_messages` инжектирует найденные чанки как системный блок `[RAG CONTEXT]`
+- **`main.py`** — инициализация `RAGStore` в lifespan; 4 новых REST endpoint
+- **`requirements.txt`** — добавлен пакет `chromadb`
+
+#### Предварительные требования
+
+Ollama должна быть запущена локально, модель `nomic-embed-text` загружена:
+
+```bash
+ollama pull nomic-embed-text
+ollama serve          # запускается автоматически при старте Ollama
+```
+
+#### API endpoints
+
+| Метод | URL | Описание |
+|---|---|---|
+| `POST` | `/rag/documents` | Загрузить документ (`text`, `source`) |
+| `GET` | `/rag/documents` | Список всех документов с метаданными |
+| `GET` | `/rag/search?q=...&top_k=5` | Семантический поиск (без сохранения в историю) |
+| `DELETE` | `/rag/documents/{doc_id}` | Удалить документ по id |
+
+#### Пример использования
+
+```bash
+# Загрузить документ
+curl -X POST http://localhost:8000/rag/documents \
+  -H "Content-Type: application/json" \
+  -d '{"text": "FastAPI — это современный веб-фреймворк для Python...", "source": "fastapi_docs.txt"}'
+
+# Ответ: {"doc_id": "doc_a1b2c3d4", "chunks": 3, "source": "fastapi_docs.txt"}
+
+# Теперь агент автоматически находит релевантные чанки при каждом вопросе
+```
+
+#### Как работает поток
+
+```
+Сообщение пользователя
+        │
+        ▼
+RAGStore.retrieve(query, top_k=5)      ← Ollama генерирует эмбеддинг запроса
+        │                                 ChromaDB ищет ближайшие чанки (cosine)
+        ▼
+_build_messages()
+  [system] base prompt
+  [system] invariants
+  [system] memory context
+  [system] [RAG CONTEXT] чанк 1 / чанк 2 / ...   ← инжектируется только если найдено
+  [user/assistant] история
+        │
+        ▼
+LLM (OpenRouter)   ← отвечает с учётом документов из RAG
+```
+
+#### Чанкинг
+
+Документы разбиваются на чанки по 500 символов с перекрытием 50 символов. Каждый чанк хранится отдельно с метаданными `doc_id`, `source`, `chunk_index`.
+
+#### Архитектурные решения
+
+- **Полностью локальный**: эмбеддинги через Ollama — никаких внешних API, никаких затрат на эмбеддинги
+- **Graceful degradation**: если Ollama недоступна — RAG пропускается, агент работает в обычном режиме
+- **Персистентность**: ChromaDB хранит векторы на диске, переживает перезапуски сервера
+- **Изоляция от агента**: `RAGStore` — независимый модуль, не привязан к конкретному пользователю (один индекс на всех)
+
+---
+
 ### Предыдущие доработки
 
 | День | Фича |

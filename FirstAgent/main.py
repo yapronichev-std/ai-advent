@@ -21,6 +21,7 @@ from mcp_search_client import MCPSearchClient
 from mcp_telegram_client import MCPTelegramClient
 from mcp_weather import MCPWeatherClient
 from profiles import UserProfileManager
+from rag import RAGStore
 
 load_dotenv()
 
@@ -41,6 +42,7 @@ search_client: MCPSearchClient | None = None
 telegram_client: MCPTelegramClient | None = None
 telegram_chat_id: str = ""
 diagram_pipeline: DiagramPipeline | None = None
+rag_store: RAGStore | None = None
 
 
 def get_agent(user_id: str) -> ChatAgent:
@@ -53,13 +55,14 @@ def get_agent(user_id: str) -> ChatAgent:
             telegram_client=telegram_client,
             telegram_chat_id=telegram_chat_id,
             diagram_pipeline=diagram_pipeline,
+            rag_store=rag_store,
         )
     return agents[user_id]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global api_key, mcp_client, search_client, telegram_client, telegram_chat_id, diagram_pipeline
+    global api_key, mcp_client, search_client, telegram_client, telegram_chat_id, diagram_pipeline, rag_store
     api_key = os.getenv("OPENROUTER_API_KEY", "")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set in .env")
@@ -118,6 +121,14 @@ async def lifespan(app: FastAPI):
         f"drawio={'on' if mcp_client else 'off'}  "
         f"telegram={'on' if telegram_client else 'off'}"
     )
+
+    # ── RAG store ─────────────────────────────────────────────────────────────
+    try:
+        rag_store = RAGStore()
+        print(f"RAGStore ready (Ollama nomic-embed-text, ChromaDB persistent)")
+    except Exception as e:
+        print(f"WARNING: RAGStore unavailable: {e}")
+        rag_store = None
 
     yield
 
@@ -441,3 +452,46 @@ async def patch_invariant(inv_id: str, request: InvariantPatchRequest):
     if not item:
         raise HTTPException(status_code=404, detail=f"Invariant '{inv_id}' not found")
     return item
+
+
+# ── RAG ───────────────────────────────────────────────────────────────────────
+
+class RAGDocumentRequest(BaseModel):
+    text: str
+    source: str = ""
+
+
+@app.post("/rag/documents", status_code=201)
+async def add_rag_document(request: RAGDocumentRequest):
+    if not rag_store:
+        raise HTTPException(status_code=503, detail="RAG store unavailable (Ollama not running?)")
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="Document text cannot be empty")
+    result = await rag_store.add_document(request.text, source=request.source)
+    return result
+
+
+@app.get("/rag/documents")
+async def list_rag_documents():
+    if not rag_store:
+        raise HTTPException(status_code=503, detail="RAG store unavailable")
+    return {"documents": rag_store.list_documents()}
+
+
+@app.delete("/rag/documents/{doc_id}")
+async def delete_rag_document(doc_id: str):
+    if not rag_store:
+        raise HTTPException(status_code=503, detail="RAG store unavailable")
+    if not rag_store.delete_document(doc_id):
+        raise HTTPException(status_code=404, detail=f"Document '{doc_id}' not found")
+    return {"status": "ok", "doc_id": doc_id}
+
+
+@app.get("/rag/search")
+async def search_rag(q: str = Query(..., description="Search query"), top_k: int = Query(default=5, ge=1, le=20)):
+    if not rag_store:
+        raise HTTPException(status_code=503, detail="RAG store unavailable")
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+    results = await rag_store.retrieve(q, top_k=top_k)
+    return {"query": q, "results": results}

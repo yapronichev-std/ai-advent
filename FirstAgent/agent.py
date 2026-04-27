@@ -12,6 +12,7 @@ from config import load_system_prompt
 from diagram_pipeline import DiagramPipeline
 from invariants import InvariantStore
 from memory import MemoryStore
+from rag import RAGStore
 from task_state import TaskFSM
 from mcp_weather import MCPWeatherClient
 from mcp_telegram_client import MCPTelegramClient
@@ -31,7 +32,8 @@ class ChatAgent:
                  mcp_client: Optional[MCPWeatherClient] = None,
                  telegram_client: Optional[MCPTelegramClient] = None,
                  telegram_chat_id: str = "",
-                 diagram_pipeline: Optional[DiagramPipeline] = None):
+                 diagram_pipeline: Optional[DiagramPipeline] = None,
+                 rag_store: Optional[RAGStore] = None):
         self.api_key = api_key
         self.model = model
         self.user_id = user_id
@@ -39,6 +41,7 @@ class ChatAgent:
         self.telegram_client = telegram_client
         self.telegram_chat_id = telegram_chat_id
         self.diagram_pipeline = diagram_pipeline
+        self.rag_store = rag_store
         self._llm_call_count: int = 0
 
         user_dir = Path("memory") / "users" / user_id
@@ -83,7 +86,15 @@ class ChatAgent:
 
         self.history.append({"role": "user", "content": user_message})
 
-        messages = self._build_messages()
+        rag_results: list[dict] = []
+        if self.rag_store:
+            try:
+                rag_results = await self.rag_store.retrieve(user_message)
+                logger.debug("[agent] RAG retrieved %d chunks", len(rag_results))
+            except Exception as exc:
+                logger.warning("[agent] RAG retrieval failed: %s", exc)
+
+        messages = self._build_messages(rag_results=rag_results)
         t0 = time.monotonic()
         response_text, usage, diagram_urls = await self._call_api(messages)
         usage["response_time_ms"] = round((time.monotonic() - t0) * 1000)
@@ -143,7 +154,7 @@ class ChatAgent:
 
     # ── Построение сообщений ──────────────────────────────────────────────
 
-    def _build_messages(self) -> list[dict]:
+    def _build_messages(self, rag_results: list[dict] | None = None) -> list[dict]:
         messages = []
         system_prompt = self._build_system_prompt()
         if system_prompt:
@@ -154,6 +165,10 @@ class ChatAgent:
         memory_context = self.memory.build_context_block()
         if memory_context:
             messages.append({"role": "system", "content": memory_context})
+        if rag_results and self.rag_store:
+            rag_block = self.rag_store.build_context_block(rag_results)
+            if rag_block:
+                messages.append({"role": "system", "content": rag_block})
         task_fsm = self.memory.get_task_state()
         if task_fsm:
             allowed = task_fsm.allowed_commands()
@@ -480,6 +495,11 @@ class ChatAgent:
                 "Multi-server demo:\n"
                 "  /report [topic]           — search + diagram + Telegram (multi-MCP flow)\n"
                 "                              по умолчанию: «Telegram bot»\n"
+                "\nRAG commands (use API endpoints to manage documents):\n"
+                "  POST /rag/documents       — upload text document (fields: text, source)\n"
+                "  GET  /rag/documents       — list all indexed documents\n"
+                "  GET  /rag/search?q=...    — semantic search in indexed documents\n"
+                "  DELETE /rag/documents/{id}— delete document by id\n"
                 "\nTask FSM commands:\n"
                 "  /task <desc>              — start a task (state: planning)\n"
                 "  /task-steps <N>           — set N steps, move to execution  [planning only]\n"
