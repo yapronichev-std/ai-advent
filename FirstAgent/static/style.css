@@ -931,3 +931,79 @@ body {
     border-radius: 6px;
     margin-top: 6px;
 }
+
+/* ── RAG Documents ── */
+.rag-docs-list {
+    max-height: 90px;
+    overflow-y: auto;
+}
+
+.rag-doc-entry {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 6px;
+    border-radius: 5px;
+    background: #f0fdf4;
+    border: 1px solid #dcfce7;
+    font-size: 11px;
+}
+
+.rag-doc-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #166534;
+}
+
+.rag-doc-chunks {
+    flex-shrink: 0;
+    color: #9ca3af;
+    font-size: 10px;
+    white-space: nowrap;
+}
+
+.rag-upload-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 2px;
+}
+
+.rag-upload-btn {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border: 1px dashed #86efac;
+    border-radius: 6px;
+    font-size: 12px;
+    color: #16a34a;
+    background: #f0fdf4;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+    user-select: none;
+}
+
+.rag-upload-btn:hover {
+    background: #dcfce7;
+    border-color: #4ade80;
+}
+
+.rag-upload-btn.uploading {
+    color: #9ca3af;
+    border-color: #e5e7eb;
+    background: #f9fafb;
+    cursor: not-allowed;
+}
+
+.rag-upload-status {
+    font-size: 11px;
+    color: #6b7280;
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}

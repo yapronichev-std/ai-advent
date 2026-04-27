@@ -137,6 +137,19 @@
                 </div>
             </div>
 
+            <!-- RAG Documents -->
+            <div class="mem-section" id="rag-section">
+                <div class="mem-section-label">RAG Docs</div>
+                <div class="mem-entries-list rag-docs-list" id="rag-docs-list"></div>
+                <div class="rag-upload-row">
+                    <label class="rag-upload-btn" for="rag-file-input">+ Upload file</label>
+                    <input type="file" id="rag-file-input"
+                           accept=".txt,.md,.rst,.csv,.json,.py,.js,.ts,.html,.xml,.yaml,.yml"
+                           hidden>
+                    <span class="rag-upload-status" id="rag-upload-status"></span>
+                </div>
+            </div>
+
             <!-- Long-term memory -->
             <div class="mem-section mem-section-grow">
                 <div class="mem-section-label">Long-term</div>

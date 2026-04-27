@@ -600,3 +600,79 @@ async function apiDeleteLtEntry(category, key) {
 function escHtml(str) {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
+
+// ── RAG Documents ───────────────────────────────────────────────────────────
+
+const ragDocsList     = document.getElementById('rag-docs-list');
+const ragFileInput    = document.getElementById('rag-file-input');
+const ragUploadBtn    = document.querySelector('.rag-upload-btn');
+const ragUploadStatus = document.getElementById('rag-upload-status');
+
+async function loadRagDocuments() {
+    try {
+        const res = await fetch('/rag/documents');
+        if (!res.ok) return;
+        const { documents } = await res.json();
+        renderRagDocuments(documents);
+    } catch (_) {}
+}
+
+function renderRagDocuments(docs) {
+    ragDocsList.innerHTML = '';
+    if (!docs || docs.length === 0) {
+        const el = document.createElement('div');
+        el.className = 'mem-empty';
+        el.textContent = '(no documents)';
+        ragDocsList.appendChild(el);
+        return;
+    }
+    docs.forEach(doc => {
+        const el = document.createElement('div');
+        el.className = 'rag-doc-entry';
+        el.innerHTML =
+            `<span class="rag-doc-name" title="${escHtml(doc.source || doc.doc_id)}">${escHtml(doc.source || doc.doc_id)}</span>` +
+            `<span class="rag-doc-chunks">${doc.chunks} chunk${doc.chunks !== 1 ? 's' : ''}</span>` +
+            `<button class="mem-del-btn" title="Delete">×</button>`;
+        el.querySelector('.mem-del-btn').addEventListener('click', async () => {
+            await fetch(`/rag/documents/${encodeURIComponent(doc.doc_id)}`, { method: 'DELETE' });
+            await loadRagDocuments();
+        });
+        ragDocsList.appendChild(el);
+    });
+}
+
+function setRagUploading(uploading, statusText = '') {
+    ragUploadBtn.classList.toggle('uploading', uploading);
+    ragFileInput.disabled = uploading;
+    ragUploadStatus.textContent = statusText;
+}
+
+ragFileInput.addEventListener('change', async () => {
+    const file = ragFileInput.files[0];
+    if (!file) return;
+    ragFileInput.value = '';
+
+    setRagUploading(true, `Reading ${file.name}…`);
+    try {
+        const text = await file.text();
+        setRagUploading(true, `Indexing ${file.name}…`);
+        const res = await fetch('/rag/documents', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, source: file.name }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+        const { chunks } = await res.json();
+        setRagUploading(false, `✓ ${file.name} (${chunks} chunks)`);
+        setTimeout(() => { ragUploadStatus.textContent = ''; }, 3000);
+        await loadRagDocuments();
+    } catch (err) {
+        setRagUploading(false, `✗ ${err.message}`);
+        setTimeout(() => { ragUploadStatus.textContent = ''; }, 4000);
+    }
+});
+
+loadRagDocuments();
