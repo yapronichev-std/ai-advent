@@ -650,17 +650,26 @@ class ChatAgent:
                     payload["tools"] = tools
                     payload["tool_choice"] = "auto"
 
-                for attempt in range(5):
+                for attempt in range(6):
                     response = await client.post(OPENROUTER_URL, headers=headers, json=payload)
                     if response.status_code == 429:
-                        wait = 2 ** attempt
-                        logger.warning("[agent] 429 rate limit, retrying in %ds (attempt %d/5)", wait, attempt + 1)
+                        retry_after = response.headers.get("Retry-After")
+                        wait = int(retry_after) if retry_after and retry_after.isdigit() else 2 ** attempt
+                        wait = min(wait, 60)
+                        logger.warning("[agent] 429 rate limit, retrying in %ds (attempt %d/6)", wait, attempt + 1)
                         await asyncio.sleep(wait)
                         continue
                     response.raise_for_status()
                     break
+                else:
+                    raise RuntimeError("OpenRouter rate limit: exceeded retries (429). Try again in a minute.")
                 data = response.json()
                 total_usage = data.get("usage", {})
+
+                if "choices" not in data or not data["choices"]:
+                    err_msg = data.get("error", {}).get("message") or str(data)
+                    logger.error("[agent] API response missing 'choices': %s", data)
+                    raise RuntimeError(f"OpenRouter error: {err_msg}")
 
                 choice = data["choices"][0]
                 message = choice["message"]

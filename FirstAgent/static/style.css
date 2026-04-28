@@ -1007,3 +1007,208 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
 }
+
+/* ── RAG upload progress bar ─────────────────────────────────────────────── */
+
+.rag-progress-wrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+.rag-progress-label {
+    font-size: 10px;
+    color: #6b7280;
+    white-space: nowrap;
+    min-width: 120px;
+    flex-shrink: 0;
+}
+
+.rag-progress-track {
+    flex: 1;
+    height: 6px;
+    background: #e5e7eb;
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.rag-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: #4ade80;
+    border-radius: 3px;
+    transition: width 0.25s ease;
+}
+
+.rag-progress-fill.done {
+    background: #16a34a;
+}
+
+.rag-status-error {
+    color: #dc2626 !important;
+}
+
+/* ── Strategy selector & compare button ─────────────────────────────────── */
+
+#rag-strategy-select {
+    font-size: 11px;
+    padding: 3px 6px;
+    border: 1px solid #d1d5db;
+    border-radius: 5px;
+    background: #fff;
+    color: #374151;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+#rag-compare-btn {
+    font-size: 11px;
+    padding: 3px 8px;
+    border: 1px solid #93c5fd;
+    border-radius: 5px;
+    background: #eff6ff;
+    color: #1d4ed8;
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+    transition: background 0.15s;
+}
+
+#rag-compare-btn:hover {
+    background: #dbeafe;
+    border-color: #60a5fa;
+}
+
+/* strategy badges */
+.rag-strategy-badge {
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    flex-shrink: 0;
+}
+
+.rag-strategy-fixed {
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #fde68a;
+}
+
+.rag-strategy-structural {
+    background: #dbeafe;
+    color: #1e40af;
+    border: 1px solid #bfdbfe;
+}
+
+/* ── Compare result panel ────────────────────────────────────────────────── */
+
+.rag-compare-result {
+    margin-top: 6px;
+    border: 1px solid #bfdbfe;
+    border-radius: 8px;
+    background: #f8faff;
+    font-size: 11px;
+    overflow: hidden;
+}
+
+.rag-compare-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: #dbeafe;
+    border-bottom: 1px solid #bfdbfe;
+}
+
+.rag-compare-title {
+    flex: 1;
+    font-weight: 600;
+    color: #1e40af;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rag-compare-chars {
+    color: #6b7280;
+    white-space: nowrap;
+}
+
+.rag-compare-close {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    color: #6b7280;
+    line-height: 1;
+    padding: 0 2px;
+}
+
+.rag-compare-cols {
+    display: flex;
+    gap: 0;
+}
+
+.rag-compare-col {
+    flex: 1;
+    padding: 8px 10px;
+    border-right: 1px solid #e0e7ff;
+}
+
+.rag-compare-col:last-child {
+    border-right: none;
+}
+
+.rag-compare-col-winner {
+    background: #f0fdf4;
+}
+
+.rag-compare-col-title {
+    font-weight: 700;
+    color: #1e3a8a;
+    margin-bottom: 4px;
+    font-size: 12px;
+}
+
+.rag-compare-winner {
+    font-weight: normal;
+    font-size: 10px;
+    color: #16a34a;
+    margin-left: 4px;
+}
+
+.rag-compare-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 4px;
+    color: #374151;
+}
+
+.rag-compare-sections {
+    color: #6b7280;
+    margin-bottom: 4px;
+    word-break: break-word;
+}
+
+.rag-compare-previews {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.rag-compare-preview-item {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 4px;
+    padding: 3px 6px;
+    color: #4b5563;
+    word-break: break-word;
+}
+
+.rag-compare-loading,
+.rag-compare-error {
+    padding: 10px;
+    color: #6b7280;
+    text-align: center;
+}

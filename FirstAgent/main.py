@@ -6,9 +6,11 @@ from typing import Literal
 from dotenv import load_dotenv
 from pathlib import Path
 
+import json
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from agent import ChatAgent
@@ -21,7 +23,7 @@ from mcp_search_client import MCPSearchClient
 from mcp_telegram_client import MCPTelegramClient
 from mcp_weather import MCPWeatherClient
 from profiles import UserProfileManager
-from rag import RAGStore
+from rag import RAGStore, compare_strategies
 
 load_dotenv()
 
@@ -69,7 +71,7 @@ async def lifespan(app: FastAPI):
 
     # ── Создаём все MCP-клиенты ───────────────────────────────────────────────
     _drawio = MCPDrawioClient()
-    _search = MCPSearchClient()
+    # _search = MCPSearchClient()  # disabled
 
     telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
     _telegram: MCPTelegramClient | None = None
@@ -78,7 +80,7 @@ async def lifespan(app: FastAPI):
     else:
         print("INFO: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set — Telegram notifications disabled")
 
-    all_clients = [_drawio, _search] + ([_telegram] if _telegram else [])
+    all_clients = [_drawio] + ([_telegram] if _telegram else [])
 
     # ── Подключаем все через MultiMCPClient ───────────────────────────────────
     mcp_client = MultiMCPClient(all_clients)
@@ -90,7 +92,7 @@ async def lifespan(app: FastAPI):
         mcp_client = None
 
     # ── Отдельные ссылки для DiagramPipeline и Telegram-хуков ────────────────
-    search_client = _search if _search._session else None
+    search_client = None  # mcp_search_server disabled
     telegram_client = _telegram if (_telegram and _telegram._session) else None
 
     if telegram_client:
@@ -459,6 +461,30 @@ async def patch_invariant(inv_id: str, request: InvariantPatchRequest):
 class RAGDocumentRequest(BaseModel):
     text: str
     source: str = ""
+    strategy: str = "fixed"
+
+
+class RAGCompareRequest(BaseModel):
+    text: str
+    source: str = ""
+
+
+@app.post("/rag/documents/stream")
+async def add_rag_document_stream(request: RAGDocumentRequest):
+    """SSE stream: emits progress events while embedding each chunk."""
+    if not rag_store:
+        raise HTTPException(status_code=503, detail="RAG store unavailable (Ollama not running?)")
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="Document text cannot be empty")
+    strategy = request.strategy if request.strategy in ("fixed", "structural") else "fixed"
+
+    async def event_gen():
+        async for event in rag_store.add_document_stream(
+            request.text, source=request.source, strategy=strategy
+        ):
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
 @app.post("/rag/documents", status_code=201)
@@ -467,7 +493,8 @@ async def add_rag_document(request: RAGDocumentRequest):
         raise HTTPException(status_code=503, detail="RAG store unavailable (Ollama not running?)")
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Document text cannot be empty")
-    result = await rag_store.add_document(request.text, source=request.source)
+    strategy = request.strategy if request.strategy in ("fixed", "structural") else "fixed"
+    result = await rag_store.add_document(request.text, source=request.source, strategy=strategy)
     return result
 
 
@@ -485,6 +512,14 @@ async def delete_rag_document(doc_id: str):
     if not rag_store.delete_document(doc_id):
         raise HTTPException(status_code=404, detail=f"Document '{doc_id}' not found")
     return {"status": "ok", "doc_id": doc_id}
+
+
+@app.post("/rag/compare")
+async def compare_rag_strategies(request: RAGCompareRequest):
+    """Compare fixed vs structural chunking side-by-side without storing embeddings."""
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="Document text cannot be empty")
+    return compare_strategies(request.text, source=request.source)
 
 
 @app.get("/rag/search")

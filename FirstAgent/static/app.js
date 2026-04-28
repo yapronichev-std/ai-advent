@@ -603,10 +603,20 @@ function escHtml(str) {
 
 // ── RAG Documents ───────────────────────────────────────────────────────────
 
-const ragDocsList     = document.getElementById('rag-docs-list');
-const ragFileInput    = document.getElementById('rag-file-input');
-const ragUploadBtn    = document.querySelector('.rag-upload-btn');
-const ragUploadStatus = document.getElementById('rag-upload-status');
+const ragDocsList        = document.getElementById('rag-docs-list');
+const ragFileInput       = document.getElementById('rag-file-input');
+const ragUploadBtn       = document.querySelector('.rag-upload-btn');
+const ragUploadStatus    = document.getElementById('rag-upload-status');
+const ragUploadStatusIdle = document.getElementById('rag-upload-status-idle');
+const ragStrategySelect  = document.getElementById('rag-strategy-select');
+const ragCompareBtn      = document.getElementById('rag-compare-btn');
+const ragCompareInput    = document.getElementById('rag-compare-input');
+const ragCompareResult   = document.getElementById('rag-compare-result');
+const ragProgressWrap    = document.getElementById('rag-progress-wrap');
+const ragProgressLabel   = document.getElementById('rag-progress-label');
+const ragProgressFill    = document.getElementById('rag-progress-fill');
+
+const STRATEGY_LABELS = { fixed: 'Fixed', structural: 'Structural' };
 
 async function loadRagDocuments() {
     try {
@@ -627,10 +637,13 @@ function renderRagDocuments(docs) {
         return;
     }
     docs.forEach(doc => {
+        const label = doc.title || doc.source || doc.doc_id;
+        const strategyBadge = doc.strategy ? `<span class="rag-strategy-badge rag-strategy-${doc.strategy}">${STRATEGY_LABELS[doc.strategy] || doc.strategy}</span>` : '';
         const el = document.createElement('div');
         el.className = 'rag-doc-entry';
         el.innerHTML =
-            `<span class="rag-doc-name" title="${escHtml(doc.source || doc.doc_id)}">${escHtml(doc.source || doc.doc_id)}</span>` +
+            `<span class="rag-doc-name" title="${escHtml(doc.source || doc.doc_id)}">${escHtml(label)}</span>` +
+            strategyBadge +
             `<span class="rag-doc-chunks">${doc.chunks} chunk${doc.chunks !== 1 ? 's' : ''}</span>` +
             `<button class="mem-del-btn" title="Delete">×</button>`;
         el.querySelector('.mem-del-btn').addEventListener('click', async () => {
@@ -641,22 +654,111 @@ function renderRagDocuments(docs) {
     });
 }
 
-function setRagUploading(uploading, statusText = '') {
+function setRagUploading(uploading) {
     ragUploadBtn.classList.toggle('uploading', uploading);
     ragFileInput.disabled = uploading;
-    ragUploadStatus.textContent = statusText;
+    ragProgressWrap.hidden = !uploading;
+    if (!uploading) {
+        ragProgressFill.style.width = '0%';
+        ragProgressLabel.textContent = '';
+        ragUploadStatus.textContent = '';
+    }
+}
+
+function setRagProgress(current, total, section) {
+    const pct = total > 0 ? (current / total) * 100 : 0;
+    ragProgressFill.style.width = `${pct.toFixed(1)}%`;
+    ragProgressFill.className = 'rag-progress-fill' + (pct >= 100 ? ' done' : '');
+    ragProgressLabel.textContent =
+        `Embedding ${current} / ${total}` + (section ? ` — ${section}` : '');
+}
+
+function setRagIdleStatus(text, isError = false) {
+    ragUploadStatusIdle.textContent = text;
+    ragUploadStatusIdle.className = 'rag-upload-status' + (isError ? ' rag-status-error' : '');
+    if (text) setTimeout(() => { ragUploadStatusIdle.textContent = ''; ragUploadStatusIdle.className = 'rag-upload-status'; }, isError ? 5000 : 3000);
 }
 
 ragFileInput.addEventListener('change', async () => {
     const file = ragFileInput.files[0];
     if (!file) return;
     ragFileInput.value = '';
+    const strategy = ragStrategySelect.value || 'fixed';
 
-    setRagUploading(true, `Reading ${file.name}…`);
+    setRagUploading(true);
+    setRagProgress(0, 1, `Reading ${file.name}…`);
+
     try {
         const text = await file.text();
-        setRagUploading(true, `Indexing ${file.name}…`);
-        const res = await fetch('/rag/documents', {
+        setRagProgress(0, 0, `Connecting…`);
+
+        const res = await fetch('/rag/documents/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, source: file.name, strategy }),
+        });
+
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalChunks = 0;
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const parts = buffer.split('\n\n');
+            buffer = parts.pop(); // keep incomplete tail
+
+            for (const part of parts) {
+                const line = part.trim();
+                if (!line.startsWith('data: ')) continue;
+                let event;
+                try { event = JSON.parse(line.slice(6)); } catch { continue; }
+
+                if (event.type === 'start') {
+                    setRagProgress(0, event.total, 'starting…');
+                } else if (event.type === 'progress') {
+                    setRagProgress(event.current, event.total, event.section);
+                } else if (event.type === 'done') {
+                    finalChunks = event.chunks;
+                    setRagProgress(event.chunks, event.chunks, 'done');
+                } else if (event.type === 'error') {
+                    throw new Error(event.message);
+                }
+            }
+        }
+
+        setRagUploading(false);
+        setRagIdleStatus(`✓ ${file.name} (${finalChunks} chunks, ${strategy})`);
+        await loadRagDocuments();
+    } catch (err) {
+        setRagUploading(false);
+        setRagIdleStatus(`✗ ${err.message}`, true);
+    }
+});
+
+// ── Compare strategies ────────────────────────────────────────────────────────
+
+ragCompareBtn.addEventListener('click', () => ragCompareInput.click());
+
+ragCompareInput.addEventListener('change', async () => {
+    const file = ragCompareInput.files[0];
+    if (!file) return;
+    ragCompareInput.value = '';
+
+    ragCompareResult.hidden = false;
+    ragCompareResult.innerHTML = `<div class="rag-compare-loading">Comparing strategies for ${escHtml(file.name)}…</div>`;
+
+    try {
+        const text = await file.text();
+        const res = await fetch('/rag/compare', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text, source: file.name }),
@@ -665,14 +767,50 @@ ragFileInput.addEventListener('change', async () => {
             const err = await res.json().catch(() => ({}));
             throw new Error(err.detail || `HTTP ${res.status}`);
         }
-        const { chunks } = await res.json();
-        setRagUploading(false, `✓ ${file.name} (${chunks} chunks)`);
-        setTimeout(() => { ragUploadStatus.textContent = ''; }, 3000);
-        await loadRagDocuments();
+        const data = await res.json();
+        renderCompareResult(file.name, data);
     } catch (err) {
-        setRagUploading(false, `✗ ${err.message}`);
-        setTimeout(() => { ragUploadStatus.textContent = ''; }, 4000);
+        ragCompareResult.innerHTML = `<div class="rag-compare-error">✗ ${escHtml(err.message)}</div>`;
     }
 });
+
+function renderCompareResult(filename, data) {
+    const { total_chars, fixed, structural, verdict } = data;
+
+    function strategyHtml(label, s, isWinner) {
+        const winnerMark = isWinner ? ' <span class="rag-compare-winner">✓ recommended</span>' : '';
+        const previewHtml = (s.preview || []).map(p =>
+            `<div class="rag-compare-preview-item"><b>${escHtml(p.section)}</b>: ${escHtml(p.text)}</div>`
+        ).join('');
+        return `
+        <div class="rag-compare-col${isWinner ? ' rag-compare-col-winner' : ''}">
+            <div class="rag-compare-col-title">${label}${winnerMark}</div>
+            <div class="rag-compare-stats">
+                <span><b>chunks:</b> ${s.count}</span>
+                <span><b>avg:</b> ${s.avg_len} chars</span>
+                <span><b>min:</b> ${s.min_len}</span>
+                <span><b>max:</b> ${s.max_len}</span>
+            </div>
+            <div class="rag-compare-sections"><b>sections:</b> ${s.sections.slice(0, 6).map(escHtml).join(', ')}${s.sections.length > 6 ? '…' : ''}</div>
+            <div class="rag-compare-previews">${previewHtml}</div>
+        </div>`;
+    }
+
+    ragCompareResult.innerHTML = `
+        <div class="rag-compare-header">
+            <span class="rag-compare-title">Chunking comparison — ${escHtml(filename)}</span>
+            <span class="rag-compare-chars">${total_chars.toLocaleString()} chars</span>
+            <button class="rag-compare-close" id="rag-compare-close-btn">×</button>
+        </div>
+        <div class="rag-compare-cols">
+            ${strategyHtml('Fixed-size', fixed, verdict === 'fixed')}
+            ${strategyHtml('Structural', structural, verdict === 'structural')}
+        </div>`;
+
+    ragCompareResult.hidden = false;
+    document.getElementById('rag-compare-close-btn').addEventListener('click', () => {
+        ragCompareResult.hidden = true;
+    });
+}
 
 loadRagDocuments();

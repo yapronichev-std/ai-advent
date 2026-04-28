@@ -146,8 +146,24 @@
                     <input type="file" id="rag-file-input"
                            accept=".txt,.md,.rst,.csv,.json,.py,.js,.ts,.html,.xml,.yaml,.yml"
                            hidden>
+                    <select id="rag-strategy-select" title="Chunking strategy">
+                        <option value="fixed">Fixed</option>
+                        <option value="structural">Structural</option>
+                    </select>
+                    <button id="rag-compare-btn" title="Compare chunking strategies">⇄ Compare</button>
+                    <input type="file" id="rag-compare-input"
+                           accept=".txt,.md,.rst,.csv,.json,.py,.js,.ts,.html,.xml,.yaml,.yml"
+                           hidden>
+                </div>
+                <div class="rag-progress-wrap" id="rag-progress-wrap" hidden>
+                    <div class="rag-progress-label" id="rag-progress-label">Embedding 0 / 0</div>
+                    <div class="rag-progress-track">
+                        <div class="rag-progress-fill" id="rag-progress-fill"></div>
+                    </div>
                     <span class="rag-upload-status" id="rag-upload-status"></span>
                 </div>
+                <span class="rag-upload-status" id="rag-upload-status-idle"></span>
+                <div id="rag-compare-result" class="rag-compare-result" hidden></div>
             </div>
 
             <!-- Long-term memory -->
