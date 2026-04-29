@@ -9,18 +9,110 @@ body {
     background: #f0f2f5;
     height: 100vh;
     display: flex;
+    flex-direction: column;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
 }
+
+/* ── App root: full-height column ── */
+.app-root {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 1200px;
+    height: 100vh;
+    padding: 0 12px;
+}
+
+/* ── Global tab navigation ── */
+.main-nav {
+    flex-shrink: 0;
+    padding: 10px 0 0;
+}
+
+.main-nav-tabs {
+    display: flex;
+    gap: 2px;
+}
+
+.main-nav-tab {
+    padding: 8px 22px;
+    border: none;
+    border-radius: 8px 8px 0 0;
+    background: #e5e7eb;
+    color: #6b7280;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.main-nav-tab:hover { background: #d1d5db; color: #374151; }
+
+.main-nav-tab.active {
+    background: #fff;
+    color: #111827;
+    font-weight: 600;
+    box-shadow: 0 -2px 0 0 #6366f1 inset;
+}
+
+/* ── Tab panels ── */
+.main-tab-panel {
+    display: none;
+    flex: 1;
+    min-height: 0;
+    background: #fff;
+    border-radius: 0 8px 8px 8px;
+    box-shadow: 0 4px 24px rgba(0,0,0,.09);
+    overflow: hidden;
+}
+
+.main-tab-panel.active { display: flex; flex-direction: column; }
 
 /* ── App layout (chat + memory side by side) ── */
 .app-layout {
     display: flex;
-    gap: 12px;
+    gap: 0;
     width: 100%;
-    max-width: 1080px;
-    height: 90vh;
-    padding: 0 12px;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* ── RAG page layout ── */
+.rag-page {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    gap: 0;
+    overflow: hidden;
+}
+
+.rag-page-col {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    padding: 16px 18px;
+    gap: 10px;
+}
+
+.rag-page-col-docs {
+    flex: 0 0 340px;
+    border-right: 1px solid #e5e7eb;
+}
+
+.rag-page-col-query {
+    flex: 1;
+    min-width: 0;
+}
+
+.rag-page-section-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #374151;
+    letter-spacing: .02em;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #e5e7eb;
 }
 
 /* ── Chat container ── */
@@ -28,11 +120,10 @@ body {
     flex: 1;
     min-width: 0;
     background: #fff;
-    border-radius: 12px;
-    box-shadow: 0 4px 24px rgba(0,0,0,0.1);
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    border-right: 1px solid #e5e7eb;
 }
 
 /* Header */
@@ -256,8 +347,6 @@ body {
     width: 260px;
     flex-shrink: 0;
     background: #fff;
-    border-radius: 12px;
-    box-shadow: 0 4px 24px rgba(0,0,0,0.1);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -1195,6 +1284,163 @@ body {
     display: flex;
     flex-direction: column;
     gap: 3px;
+}
+
+/* ── RAG Query Comparison ─────────────────────────────────────────────────── */
+
+.rag-query-row {
+    display: flex;
+    gap: 5px;
+}
+
+.rag-query-input {
+    flex: 1;
+    padding: 7px 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    background: #fff;
+    color: #111827;
+    font-size: 13px;
+}
+
+.rag-query-btn {
+    padding: 7px 16px;
+    border: none;
+    border-radius: 6px;
+    background: #6366f1;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.rag-query-btn:hover { background: #4f46e5; }
+.rag-query-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+.rag-query-result {
+    flex: 1;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    overflow: hidden;
+    font-size: 13px;
+    display: flex;
+    flex-direction: column;
+}
+
+.rag-qc-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: #f9fafb;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.rag-qc-question {
+    flex: 1;
+    font-weight: 600;
+    color: #111827;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.rag-qc-elapsed {
+    color: #9ca3af;
+    font-size: 11px;
+    flex-shrink: 0;
+}
+
+.rag-qc-cols {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.rag-qc-col {
+    flex: 1;
+    padding: 12px;
+    border-right: 1px solid #e5e7eb;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.rag-qc-col:last-child { border-right: none; }
+
+.rag-qc-col-rag { background: #fafaf9; }
+
+.rag-qc-col-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: #6b7280;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.rag-qc-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.rag-qc-badge-on  { background: #dcfce7; color: #16a34a; }
+.rag-qc-badge-off { background: #fee2e2; color: #dc2626; }
+
+.rag-qc-answer {
+    flex: 1;
+    white-space: pre-wrap;
+    line-height: 1.6;
+    color: #111827;
+    font-size: 13px;
+}
+
+.rag-qc-tokens {
+    font-size: 11px;
+    color: #9ca3af;
+}
+
+.rag-qc-chunks-details {
+    border-top: 1px solid #e5e7eb;
+    padding-top: 6px;
+}
+
+.rag-qc-chunks-details summary {
+    cursor: pointer;
+    font-size: 11px;
+    color: #6b7280;
+    user-select: none;
+}
+
+.rag-qc-chunk {
+    margin-top: 6px;
+    padding: 6px 8px;
+    background: #f9fafb;
+    border-radius: 5px;
+    border: 1px solid #e5e7eb;
+}
+
+.rag-qc-chunk-idx  { font-weight: 700; margin-right: 4px; color: #374151; }
+.rag-qc-chunk-meta { color: #6b7280; font-size: 11px; }
+.rag-qc-chunk-score { float: right; font-size: 11px; color: #9ca3af; }
+
+.rag-qc-chunk-text {
+    margin-top: 4px;
+    white-space: pre-wrap;
+    font-size: 11px;
+    color: #374151;
+    max-height: 100px;
+    overflow-y: auto;
 }
 
 .rag-compare-preview-item {

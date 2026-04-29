@@ -110,6 +110,59 @@ class ChatAgent:
 
         return response_text, usage, diagram_urls
 
+    async def compare_rag(self, question: str, top_k: int = 5) -> dict:
+        """Call LLM twice (with and without RAG) and return both answers for comparison."""
+        # 1. Retrieve relevant chunks
+        rag_results: list[dict] = []
+        if self.rag_store:
+            try:
+                rag_results = await self.rag_store.retrieve(question, top_k=top_k)
+                logger.debug("[agent] compare_rag retrieved %d chunks", len(rag_results))
+            except Exception as exc:
+                logger.warning("[agent] compare_rag RAG retrieval failed: %s", exc)
+
+        # 2. Build base messages (no RAG context, no conversation history)
+        system_prompt = self._build_system_prompt()
+        base_messages: list[dict] = []
+        if system_prompt:
+            base_messages.append({"role": "system", "content": system_prompt})
+        base_messages.append({"role": "user", "content": question})
+
+        # 3. Build messages with RAG context injected
+        rag_messages: list[dict] = list(base_messages[:-1])  # system prompt only
+        if rag_results and self.rag_store:
+            rag_block = self.rag_store.build_context_block(rag_results)
+            if rag_block:
+                rag_messages.append({"role": "system", "content": rag_block})
+        rag_messages.append({"role": "user", "content": question})
+
+        # 4. Fire both LLM calls in parallel
+        t0 = time.monotonic()
+        (answer_without, usage_without, _), (answer_with, usage_with, _) = await asyncio.gather(
+            self._call_api(base_messages),
+            self._call_api(rag_messages),
+        )
+        elapsed_ms = round((time.monotonic() - t0) * 1000)
+
+        return {
+            "question": question,
+            "without_rag": {
+                "answer": answer_without,
+                "usage": usage_without,
+            },
+            "with_rag": {
+                "answer": answer_with,
+                "usage": usage_with,
+                "chunks_used": len(rag_results),
+                "chunks": [
+                    {"text": r["text"][:300], "source": r["source"], "section": r["section"], "score": r["score"]}
+                    for r in rag_results
+                ],
+            },
+            "rag_available": bool(rag_results),
+            "elapsed_ms": elapsed_ms,
+        }
+
     def get_history(self) -> list[dict]:
         return self.history
 

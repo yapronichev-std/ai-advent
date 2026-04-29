@@ -530,3 +530,18 @@ async def search_rag(q: str = Query(..., description="Search query"), top_k: int
         raise HTTPException(status_code=400, detail="Query cannot be empty")
     results = await rag_store.retrieve(q, top_k=top_k)
     return {"query": q, "results": results}
+
+
+class RAGQueryCompareRequest(BaseModel):
+    question: str
+    user_id: str = "default"
+    top_k: int = 5
+
+
+@app.post("/rag/query-compare")
+async def rag_query_compare(request: RAGQueryCompareRequest):
+    """Ask the same question twice — with and without RAG context — and return both answers."""
+    if not request.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+    agent = get_agent(request.user_id)
+    return await agent.compare_rag(request.question, top_k=request.top_k)

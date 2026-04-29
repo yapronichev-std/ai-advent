@@ -7,182 +7,221 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <div class="app-layout">
+    <div class="app-root">
 
-        <!-- ── Chat ── -->
-        <div class="chat-container">
-            <header class="chat-header">
-                <h1>Chat Agent</h1>
-                <div class="user-bar">
-                    <span class="user-label">User</span>
-                    <select id="user-select"></select>
-                    <button id="user-add-btn" title="New user">+</button>
-                    <button id="user-del-btn" title="Delete user">×</button>
-                </div>
-                <button id="clear-btn" title="Clear history">Clear</button>
-            </header>
-            <div class="user-new-row" id="user-new-row" hidden>
-                <input id="user-new-input" placeholder="Enter user id…" autocomplete="off">
-                <button id="user-new-confirm">Create</button>
-                <button id="user-new-cancel">Cancel</button>
+        <!-- ── Global tab bar ── -->
+        <nav class="main-nav">
+            <div class="main-nav-tabs">
+                <button class="main-nav-tab active" data-tab="chat">Chat</button>
+                <button class="main-nav-tab" data-tab="rag">RAG</button>
             </div>
+        </nav>
 
-            <div class="token-panel" id="token-panel">
-                <div class="token-panel-row">
-                    <span class="token-label">Tokens used</span>
-                    <span class="token-counts">
-                        <span id="token-used">0</span> / <span id="token-limit">4,000</span>
-                    </span>
-                    <button id="reset-tokens-btn" title="Reset token counter">Reset</button>
-                </div>
-                <div class="token-bar-track">
-                    <div class="token-bar-fill" id="token-bar-fill"></div>
-                </div>
-                <div class="token-warning" id="token-warning" hidden>
-                    ⚠ Token usage exceeded 80% of limit
-                </div>
-            </div>
+        <!-- ══ Chat tab ══ -->
+        <div class="main-tab-panel active" id="tab-chat">
+            <div class="app-layout">
 
-            <details class="sysprompt-details" id="sysprompt-details">
-                <summary class="sysprompt-toggle" id="sysprompt-toggle">System prompt</summary>
-                <div class="sysprompt-body">
-                    <textarea id="sysprompt-input" rows="4" placeholder="Enter system prompt…" spellcheck="false"></textarea>
-                    <div class="sysprompt-actions">
-                        <span class="sysprompt-status" id="sysprompt-status"></span>
-                        <button id="sysprompt-save-btn">Save</button>
+                <!-- ── Chat ── -->
+                <div class="chat-container">
+                    <header class="chat-header">
+                        <h1>Chat Agent</h1>
+                        <div class="user-bar">
+                            <span class="user-label">User</span>
+                            <select id="user-select"></select>
+                            <button id="user-add-btn" title="New user">+</button>
+                            <button id="user-del-btn" title="Delete user">×</button>
+                        </div>
+                        <button id="clear-btn" title="Clear history">Clear</button>
+                    </header>
+                    <div class="user-new-row" id="user-new-row" hidden>
+                        <input id="user-new-input" placeholder="Enter user id…" autocomplete="off">
+                        <button id="user-new-confirm">Create</button>
+                        <button id="user-new-cancel">Cancel</button>
+                    </div>
+
+                    <div class="token-panel" id="token-panel">
+                        <div class="token-panel-row">
+                            <span class="token-label">Tokens used</span>
+                            <span class="token-counts">
+                                <span id="token-used">0</span> / <span id="token-limit">4,000</span>
+                            </span>
+                            <button id="reset-tokens-btn" title="Reset token counter">Reset</button>
+                        </div>
+                        <div class="token-bar-track">
+                            <div class="token-bar-fill" id="token-bar-fill"></div>
+                        </div>
+                        <div class="token-warning" id="token-warning" hidden>
+                            ⚠ Token usage exceeded 80% of limit
+                        </div>
+                    </div>
+
+                    <details class="sysprompt-details" id="sysprompt-details">
+                        <summary class="sysprompt-toggle" id="sysprompt-toggle">System prompt</summary>
+                        <div class="sysprompt-body">
+                            <textarea id="sysprompt-input" rows="4" placeholder="Enter system prompt…" spellcheck="false"></textarea>
+                            <div class="sysprompt-actions">
+                                <span class="sysprompt-status" id="sysprompt-status"></span>
+                                <button id="sysprompt-save-btn">Save</button>
+                            </div>
+                        </div>
+                    </details>
+
+                    <div class="messages" id="messages">
+                        <div class="empty-state">Start a conversation...</div>
+                    </div>
+
+                    <form class="input-area" id="chat-form">
+                        <textarea
+                            id="input"
+                            placeholder="Type a message or /help for memory commands..."
+                            rows="1"
+                            autofocus
+                        ></textarea>
+                        <button type="submit" id="send-btn">Send</button>
+                    </form>
+                </div>
+
+                <!-- ── Memory panel ── -->
+                <div class="memory-panel" id="memory-panel">
+                    <div class="mem-header">
+                        <span class="mem-title">Memory</span>
+                        <button id="refresh-memory-btn" title="Refresh memory">↻</button>
+                    </div>
+
+                    <!-- Invariants -->
+                    <div class="mem-section" id="inv-section">
+                        <div class="mem-section-label">Invariants</div>
+                        <div class="mem-entries-list" id="inv-list"></div>
+                        <div class="mem-add-row">
+                            <input class="mem-val-input" id="inv-input" placeholder="rule the assistant must follow…">
+                            <button class="mem-add-btn" id="inv-add-btn" title="Add invariant">+</button>
+                        </div>
+                    </div>
+
+                    <!-- Short-term memory -->
+                    <div class="mem-section">
+                        <div class="mem-section-label">Short-term</div>
+
+                        <div class="mem-st-stats">
+                            <span class="mem-st-count" id="mem-st-count">0 / 10 messages</span>
+                            <div class="mem-st-bar-track">
+                                <div class="mem-st-bar-fill" id="mem-st-bar-fill"></div>
+                            </div>
+                        </div>
+
+                        <details class="mem-summary-details" id="mem-summary-details">
+                            <summary class="mem-summary-toggle" id="mem-summary-toggle">Summary</summary>
+                            <div class="mem-summary-body" id="mem-summary-body">(none)</div>
+                        </details>
+                    </div>
+
+                    <!-- Working memory -->
+                    <div class="mem-section">
+                        <div class="mem-section-label">Working</div>
+
+                        <div class="mem-task-block">
+                            <div class="mem-task-row">
+                                <span class="mem-task-text" id="mem-task-text">(no task)</span>
+                                <button class="mem-icon-btn mem-done-btn" id="mem-task-done-btn" title="Complete task" hidden>✓</button>
+                            </div>
+                            <input class="mem-input-full" id="mem-task-input" placeholder="Set task and press Enter…">
+                        </div>
+
+                        <div class="task-fsm-bar" id="task-fsm-bar" hidden>
+                            <div class="task-fsm-states">
+                                <span class="task-fsm-state" data-state="planning">planning</span>
+                                <span class="task-fsm-sep">→</span>
+                                <span class="task-fsm-state" data-state="execution">execution</span>
+                                <span class="task-fsm-sep">→</span>
+                                <span class="task-fsm-state" data-state="validation">validation</span>
+                                <span class="task-fsm-sep">→</span>
+                                <span class="task-fsm-state" data-state="done">done</span>
+                            </div>
+                            <div class="task-fsm-meta" id="task-fsm-meta"></div>
+                        </div>
+
+                        <div class="mem-entries-list" id="mem-facts-list"></div>
+
+                        <div class="mem-add-row">
+                            <input class="mem-key-input" id="mem-fact-key" placeholder="key">
+                            <input class="mem-val-input" id="mem-fact-val" placeholder="value">
+                            <button class="mem-add-btn" id="mem-add-fact-btn" title="Add fact">+</button>
+                        </div>
+                    </div>
+
+                    <!-- Long-term memory -->
+                    <div class="mem-section mem-section-grow">
+                        <div class="mem-section-label">Long-term</div>
+
+                        <div class="mem-tabs">
+                            <button class="mem-tab active" data-cat="profile">Profile</button>
+                            <button class="mem-tab" data-cat="decisions">Decisions</button>
+                            <button class="mem-tab" data-cat="knowledge">Knowledge</button>
+                        </div>
+
+                        <div class="mem-entries-list mem-lt-list" id="mem-lt-list"></div>
+
+                        <div class="mem-add-row">
+                            <input class="mem-key-input" id="mem-lt-key" placeholder="key">
+                            <input class="mem-val-input" id="mem-lt-val" placeholder="value">
+                            <button class="mem-add-btn" id="mem-add-lt-btn" title="Add entry">+</button>
+                        </div>
                     </div>
                 </div>
-            </details>
 
-            <div class="messages" id="messages">
-                <div class="empty-state">Start a conversation...</div>
             </div>
-
-            <form class="input-area" id="chat-form">
-                <textarea
-                    id="input"
-                    placeholder="Type a message or /help for memory commands..."
-                    rows="1"
-                    autofocus
-                ></textarea>
-                <button type="submit" id="send-btn">Send</button>
-            </form>
         </div>
 
-        <!-- ── Memory panel ── -->
-        <div class="memory-panel" id="memory-panel">
-            <div class="mem-header">
-                <span class="mem-title">Memory</span>
-                <button id="refresh-memory-btn" title="Refresh memory">↻</button>
-            </div>
+        <!-- ══ RAG tab ══ -->
+        <div class="main-tab-panel" id="tab-rag">
+            <div class="rag-page">
 
-            <!-- Invariants -->
-            <div class="mem-section" id="inv-section">
-                <div class="mem-section-label">Invariants</div>
-                <div class="mem-entries-list" id="inv-list"></div>
-                <div class="mem-add-row">
-                    <input class="mem-val-input" id="inv-input" placeholder="rule the assistant must follow…">
-                    <button class="mem-add-btn" id="inv-add-btn" title="Add invariant">+</button>
-                </div>
-            </div>
+                <!-- Left: documents -->
+                <div class="rag-page-col rag-page-col-docs">
+                    <div class="rag-page-section-title">Documents</div>
 
-            <!-- Short-term memory -->
-            <div class="mem-section">
-                <div class="mem-section-label">Short-term</div>
+                    <div class="mem-entries-list rag-docs-list" id="rag-docs-list"></div>
 
-                <div class="mem-st-stats">
-                    <span class="mem-st-count" id="mem-st-count">0 / 10 messages</span>
-                    <div class="mem-st-bar-track">
-                        <div class="mem-st-bar-fill" id="mem-st-bar-fill"></div>
+                    <div class="rag-upload-row">
+                        <label class="rag-upload-btn" for="rag-file-input">+ Upload file</label>
+                        <input type="file" id="rag-file-input"
+                               accept=".txt,.md,.rst,.csv,.json,.py,.js,.ts,.html,.xml,.yaml,.yml"
+                               hidden>
+                        <select id="rag-strategy-select" title="Chunking strategy">
+                            <option value="fixed">Fixed</option>
+                            <option value="structural">Structural</option>
+                        </select>
+                        <button id="rag-compare-btn" title="Compare chunking strategies">⇄ Compare</button>
+                        <input type="file" id="rag-compare-input"
+                               accept=".txt,.md,.rst,.csv,.json,.py,.js,.ts,.html,.xml,.yaml,.yml"
+                               hidden>
                     </div>
-                </div>
 
-                <details class="mem-summary-details" id="mem-summary-details">
-                    <summary class="mem-summary-toggle" id="mem-summary-toggle">Summary</summary>
-                    <div class="mem-summary-body" id="mem-summary-body">(none)</div>
-                </details>
-            </div>
-
-            <!-- Working memory -->
-            <div class="mem-section">
-                <div class="mem-section-label">Working</div>
-
-                <div class="mem-task-block">
-                    <div class="mem-task-row">
-                        <span class="mem-task-text" id="mem-task-text">(no task)</span>
-                        <button class="mem-icon-btn mem-done-btn" id="mem-task-done-btn" title="Complete task" hidden>✓</button>
+                    <div class="rag-progress-wrap" id="rag-progress-wrap" hidden>
+                        <div class="rag-progress-label" id="rag-progress-label">Embedding 0 / 0</div>
+                        <div class="rag-progress-track">
+                            <div class="rag-progress-fill" id="rag-progress-fill"></div>
+                        </div>
+                        <span class="rag-upload-status" id="rag-upload-status"></span>
                     </div>
-                    <input class="mem-input-full" id="mem-task-input" placeholder="Set task and press Enter…">
+                    <span class="rag-upload-status" id="rag-upload-status-idle"></span>
+
+                    <div id="rag-compare-result" class="rag-compare-result" hidden></div>
                 </div>
 
-                <div class="task-fsm-bar" id="task-fsm-bar" hidden>
-                    <div class="task-fsm-states">
-                        <span class="task-fsm-state" data-state="planning">planning</span>
-                        <span class="task-fsm-sep">→</span>
-                        <span class="task-fsm-state" data-state="execution">execution</span>
-                        <span class="task-fsm-sep">→</span>
-                        <span class="task-fsm-state" data-state="validation">validation</span>
-                        <span class="task-fsm-sep">→</span>
-                        <span class="task-fsm-state" data-state="done">done</span>
+                <!-- Right: query comparison -->
+                <div class="rag-page-col rag-page-col-query">
+                    <div class="rag-page-section-title">Ask with / without RAG</div>
+
+                    <div class="rag-query-row">
+                        <input type="text" id="rag-query-input" class="rag-query-input"
+                               placeholder="Enter a question…" autocomplete="off">
+                        <button id="rag-query-btn" class="rag-query-btn">Ask</button>
                     </div>
-                    <div class="task-fsm-meta" id="task-fsm-meta"></div>
+
+                    <div id="rag-query-result" class="rag-query-result" hidden></div>
                 </div>
 
-                <div class="mem-entries-list" id="mem-facts-list"></div>
-
-                <div class="mem-add-row">
-                    <input class="mem-key-input" id="mem-fact-key" placeholder="key">
-                    <input class="mem-val-input" id="mem-fact-val" placeholder="value">
-                    <button class="mem-add-btn" id="mem-add-fact-btn" title="Add fact">+</button>
-                </div>
-            </div>
-
-            <!-- RAG Documents -->
-            <div class="mem-section" id="rag-section">
-                <div class="mem-section-label">RAG Docs</div>
-                <div class="mem-entries-list rag-docs-list" id="rag-docs-list"></div>
-                <div class="rag-upload-row">
-                    <label class="rag-upload-btn" for="rag-file-input">+ Upload file</label>
-                    <input type="file" id="rag-file-input"
-                           accept=".txt,.md,.rst,.csv,.json,.py,.js,.ts,.html,.xml,.yaml,.yml"
-                           hidden>
-                    <select id="rag-strategy-select" title="Chunking strategy">
-                        <option value="fixed">Fixed</option>
-                        <option value="structural">Structural</option>
-                    </select>
-                    <button id="rag-compare-btn" title="Compare chunking strategies">⇄ Compare</button>
-                    <input type="file" id="rag-compare-input"
-                           accept=".txt,.md,.rst,.csv,.json,.py,.js,.ts,.html,.xml,.yaml,.yml"
-                           hidden>
-                </div>
-                <div class="rag-progress-wrap" id="rag-progress-wrap" hidden>
-                    <div class="rag-progress-label" id="rag-progress-label">Embedding 0 / 0</div>
-                    <div class="rag-progress-track">
-                        <div class="rag-progress-fill" id="rag-progress-fill"></div>
-                    </div>
-                    <span class="rag-upload-status" id="rag-upload-status"></span>
-                </div>
-                <span class="rag-upload-status" id="rag-upload-status-idle"></span>
-                <div id="rag-compare-result" class="rag-compare-result" hidden></div>
-            </div>
-
-            <!-- Long-term memory -->
-            <div class="mem-section mem-section-grow">
-                <div class="mem-section-label">Long-term</div>
-
-                <div class="mem-tabs">
-                    <button class="mem-tab active" data-cat="profile">Profile</button>
-                    <button class="mem-tab" data-cat="decisions">Decisions</button>
-                    <button class="mem-tab" data-cat="knowledge">Knowledge</button>
-                </div>
-
-                <div class="mem-entries-list mem-lt-list" id="mem-lt-list"></div>
-
-                <div class="mem-add-row">
-                    <input class="mem-key-input" id="mem-lt-key" placeholder="key">
-                    <input class="mem-val-input" id="mem-lt-val" placeholder="value">
-                    <button class="mem-add-btn" id="mem-add-lt-btn" title="Add entry">+</button>
-                </div>
             </div>
         </div>
 

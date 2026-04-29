@@ -1,6 +1,18 @@
 // ── State ───────────────────────────────────────────────────────────────────
 let currentUserId = 'default';
 
+// ── Main tab switching ───────────────────────────────────────────────────────
+document.querySelectorAll('.main-nav-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const tab = btn.dataset.tab;
+        document.querySelectorAll('.main-nav-tab').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.main-tab-panel').forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById(`tab-${tab}`).classList.add('active');
+        if (tab === 'rag') loadRagDocuments();
+    });
+});
+
 // ── Chat elements ──────────────────────────────────────────────────────────
 const messagesEl       = document.getElementById('messages');
 const form             = document.getElementById('chat-form');
@@ -814,3 +826,85 @@ function renderCompareResult(filename, data) {
 }
 
 loadRagDocuments();
+
+// ── RAG Query Comparison ──────────────────────────────────────────────────────
+
+const ragQueryInput  = document.getElementById('rag-query-input');
+const ragQueryBtn    = document.getElementById('rag-query-btn');
+const ragQueryResult = document.getElementById('rag-query-result');
+
+async function runRagQueryCompare() {
+    const question = ragQueryInput.value.trim();
+    if (!question) return;
+
+    ragQueryBtn.disabled = true;
+    ragQueryBtn.textContent = '…';
+    ragQueryResult.hidden = false;
+    ragQueryResult.innerHTML = '<div class="rag-compare-loading">Asking LLM with and without RAG context…</div>';
+
+    try {
+        const res = await fetch('/rag/query-compare', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question, user_id: currentUserId, top_k: 5 }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        renderRagQueryCompare(data);
+    } catch (err) {
+        ragQueryResult.innerHTML = `<div class="rag-compare-error">✗ ${escHtml(err.message)}</div>`;
+    } finally {
+        ragQueryBtn.disabled = false;
+        ragQueryBtn.textContent = 'Ask';
+    }
+}
+
+function renderRagQueryCompare(data) {
+    const { question, without_rag, with_rag, rag_available, elapsed_ms } = data;
+
+    const chunksHtml = (with_rag.chunks || []).map((c, i) =>
+        `<div class="rag-qc-chunk">
+            <span class="rag-qc-chunk-idx">#${i + 1}</span>
+            <span class="rag-qc-chunk-meta">${escHtml(c.source || '')}${c.section ? ' / ' + escHtml(c.section) : ''}</span>
+            <span class="rag-qc-chunk-score">score: ${c.score}</span>
+            <div class="rag-qc-chunk-text">${escHtml(c.text)}</div>
+        </div>`
+    ).join('');
+
+    const ragBadge = rag_available
+        ? `<span class="rag-qc-badge rag-qc-badge-on">${with_rag.chunks_used} chunk${with_rag.chunks_used !== 1 ? 's' : ''} used</span>`
+        : `<span class="rag-qc-badge rag-qc-badge-off">no docs indexed</span>`;
+
+    ragQueryResult.innerHTML = `
+        <div class="rag-qc-header">
+            <span class="rag-qc-question">${escHtml(question)}</span>
+            <span class="rag-qc-elapsed">${elapsed_ms} ms</span>
+            <button class="rag-compare-close" id="rag-qc-close-btn">×</button>
+        </div>
+        <div class="rag-qc-cols">
+            <div class="rag-qc-col">
+                <div class="rag-qc-col-title">Without RAG</div>
+                <div class="rag-qc-answer">${escHtml(without_rag.answer)}</div>
+                <div class="rag-qc-tokens">tokens: ${without_rag.usage.total_tokens || 0}</div>
+            </div>
+            <div class="rag-qc-col rag-qc-col-rag">
+                <div class="rag-qc-col-title">With RAG ${ragBadge}</div>
+                <div class="rag-qc-answer">${escHtml(with_rag.answer)}</div>
+                <div class="rag-qc-tokens">tokens: ${with_rag.usage.total_tokens || 0}</div>
+                ${rag_available ? `<details class="rag-qc-chunks-details"><summary>Retrieved chunks (${with_rag.chunks_used})</summary>${chunksHtml}</details>` : ''}
+            </div>
+        </div>`;
+
+    ragQueryResult.hidden = false;
+    document.getElementById('rag-qc-close-btn').addEventListener('click', () => {
+        ragQueryResult.hidden = true;
+    });
+}
+
+ragQueryBtn.addEventListener('click', runRagQueryCompare);
+ragQueryInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runRagQueryCompare(); }
+});
