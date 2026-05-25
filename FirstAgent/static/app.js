@@ -829,9 +829,25 @@ loadRagDocuments();
 
 // ── RAG Query Comparison ──────────────────────────────────────────────────────
 
-const ragQueryInput  = document.getElementById('rag-query-input');
-const ragQueryBtn    = document.getElementById('rag-query-btn');
-const ragQueryResult = document.getElementById('rag-query-result');
+const ragQueryInput   = document.getElementById('rag-query-input');
+const ragQueryBtn     = document.getElementById('rag-query-btn');
+const ragQueryResult  = document.getElementById('rag-query-result');
+const ragPreK         = document.getElementById('rag-prek');
+const ragPostK        = document.getElementById('rag-postk');
+const ragThreshold    = document.getElementById('rag-threshold');
+const ragMmr          = document.getElementById('rag-mmr');
+const ragRewriteSel   = document.getElementById('rag-rewrite-select');
+const ragModeTabs     = document.querySelectorAll('.rag-mode-tab');
+
+let ragCompareMode = 'all'; // 'simple' | 'all'
+
+ragModeTabs.forEach(btn => {
+    btn.addEventListener('click', () => {
+        ragModeTabs.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        ragCompareMode = btn.dataset.mode;
+    });
+});
 
 async function runRagQueryCompare() {
     const question = ragQueryInput.value.trim();
@@ -840,20 +856,37 @@ async function runRagQueryCompare() {
     ragQueryBtn.disabled = true;
     ragQueryBtn.textContent = '…';
     ragQueryResult.hidden = false;
-    ragQueryResult.innerHTML = '<div class="rag-compare-loading">Asking LLM with and without RAG context…</div>';
+    ragQueryResult.innerHTML = '<div class="rag-compare-loading">Running RAG pipeline comparison…</div>';
 
     try {
-        const res = await fetch('/rag/query-compare', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ question, user_id: currentUserId, top_k: 5 }),
-        });
-        if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error(err.detail || `HTTP ${res.status}`);
+        if (ragCompareMode === 'simple') {
+            const res = await fetch('/rag/query-compare', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question, user_id: currentUserId, top_k: parseInt(ragPostK.value) || 5 }),
+            });
+            if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || `HTTP ${res.status}`); }
+            const data = await res.json();
+            renderRagQueryCompare(data);
+        } else {
+            const body = {
+                question,
+                user_id: currentUserId,
+                pre_k: parseInt(ragPreK.value) || 10,
+                post_k: parseInt(ragPostK.value) || 5,
+                threshold: parseFloat(ragThreshold.value) || 0.3,
+                rewrite: ragRewriteSel.value || 'keywords',
+                use_mmr: ragMmr.checked,
+            };
+            const res = await fetch('/rag/compare-all', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || `HTTP ${res.status}`); }
+            const data = await res.json();
+            renderRagCompareAll(data);
         }
-        const data = await res.json();
-        renderRagQueryCompare(data);
     } catch (err) {
         ragQueryResult.innerHTML = `<div class="rag-compare-error">✗ ${escHtml(err.message)}</div>`;
     } finally {
@@ -861,6 +894,8 @@ async function runRagQueryCompare() {
         ragQueryBtn.textContent = 'Ask';
     }
 }
+
+// ── Simple A/B comparison (kept for backward compatibility) ────────────────
 
 function renderRagQueryCompare(data) {
     const { question, without_rag, with_rag, rag_available, elapsed_ms } = data;
@@ -897,6 +932,76 @@ function renderRagQueryCompare(data) {
                 ${rag_available ? `<details class="rag-qc-chunks-details"><summary>Retrieved chunks (${with_rag.chunks_used})</summary>${chunksHtml}</details>` : ''}
             </div>
         </div>`;
+
+    ragQueryResult.hidden = false;
+    document.getElementById('rag-qc-close-btn').addEventListener('click', () => {
+        ragQueryResult.hidden = true;
+    });
+}
+
+// ── Full 5-mode comparison ─────────────────────────────────────────────────
+
+function renderRagCompareAll(data) {
+    const { question, modes, pipeline_info, total_elapsed_ms } = data;
+
+    const MODE_LABELS = {
+        'no-rag': 'No RAG',
+        'rag-basic': 'RAG basic',
+        'rag+rewrite': 'RAG + rewrite',
+        'rag+rerank': 'RAG + rerank',
+        'rag+rewrite+rerank': 'RAG + rewrite + rerank',
+    };
+    const MODE_CLASSES = {
+        'no-rag': '',
+        'rag-basic': 'rag-qc-col-rag',
+        'rag+rewrite': 'rag-qc-col-rag',
+        'rag+rerank': 'rag-qc-col-rag',
+        'rag+rewrite+rerank': 'rag-qc-col-winner',
+    };
+
+    const modeOrder = ['no-rag', 'rag-basic', 'rag+rewrite', 'rag+rerank', 'rag+rewrite+rerank'];
+
+    const colsHtml = modeOrder.map(mode => {
+        const m = modes[mode];
+        if (!m) return '';
+        return `
+        <div class="rag-qc-col ${MODE_CLASSES[mode]}">
+            <div class="rag-qc-col-title">${MODE_LABELS[mode] || mode}</div>
+            <div class="rag-qc-answer">${escHtml(m.answer)}</div>
+            <div class="rag-qc-stats">
+                <span class="rag-qc-tokens">tokens: ${m.usage.total_tokens || 0}</span>
+                <span class="rag-qc-time">${m.elapsed_ms} ms</span>
+            </div>
+        </div>`;
+    }).join('');
+
+    const chunksHtml = (pipeline_info.retrieved_chunks || []).map((c, i) =>
+        `<div class="rag-qc-chunk ${c.score < pipeline_info.threshold ? 'rag-qc-chunk-filtered' : ''}">
+            <span class="rag-qc-chunk-idx">#${i + 1}</span>
+            <span class="rag-qc-chunk-meta">${escHtml(c.source || '')}${c.section ? ' / ' + escHtml(c.section) : ''}</span>
+            <span class="rag-qc-chunk-score ${c.score < pipeline_info.threshold ? 'rag-qc-score-low' : 'rag-qc-score-ok'}">score: ${c.score}</span>
+            <div class="rag-qc-chunk-text">${escHtml(c.text)}</div>
+        </div>`
+    ).join('');
+
+    ragQueryResult.innerHTML = `
+        <div class="rag-qc-header">
+            <span class="rag-qc-question">${escHtml(question)}</span>
+            <span class="rag-qc-elapsed">${total_elapsed_ms} ms total</span>
+            <button class="rag-compare-close" id="rag-qc-close-btn">×</button>
+        </div>
+        <div class="rag-pipeline-info">
+            <span>Pre-K: ${pipeline_info.pre_k}</span>
+            <span>Post-K: ${pipeline_info.post_k}</span>
+            <span>Threshold: ${pipeline_info.threshold}</span>
+            <span>Rewrite: ${pipeline_info.rewrite_strategy}</span>
+            <span>MMR: ${pipeline_info.use_mmr ? 'on' : 'off'}</span>
+            ${pipeline_info.rewritten_query ? `<span>Rewritten: «${escHtml(pipeline_info.rewritten_query)}»</span>` : ''}
+            <span>Chunks: ${pipeline_info.chunks_before_rerank} → ${pipeline_info.chunks_after_rerank}</span>
+        </div>
+        <div class="rag-qc-cols rag-qc-cols-all">${colsHtml}</div>
+        ${pipeline_info.retrieved_chunks.length ? `<details class="rag-qc-chunks-details"><summary>Retrieved chunks (${pipeline_info.chunks_after_rerank} after rerank)</summary>${chunksHtml}</details>` : ''}
+    `;
 
     ragQueryResult.hidden = false;
     document.getElementById('rag-qc-close-btn').addEventListener('click', () => {

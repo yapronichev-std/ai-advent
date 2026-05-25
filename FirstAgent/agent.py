@@ -12,7 +12,7 @@ from config import load_system_prompt
 from diagram_pipeline import DiagramPipeline
 from invariants import InvariantStore
 from memory import MemoryStore
-from rag import RAGStore
+from rag import RAGStore, RAGRetriever, rewrite_query, rerank_results
 from task_state import TaskFSM
 from mcp_weather import MCPWeatherClient
 from mcp_telegram_client import MCPTelegramClient
@@ -89,8 +89,15 @@ class ChatAgent:
         rag_results: list[dict] = []
         if self.rag_store:
             try:
-                rag_results = await self.rag_store.retrieve(user_message)
-                logger.debug("[agent] RAG retrieved %d chunks", len(rag_results))
+                search_query = rewrite_query(user_message, strategy="keywords")
+                logger.debug("[agent] RAG query rewritten: %r → %r", user_message[:80], search_query[:80])
+                raw_results = await self.rag_store.retrieve(search_query, top_k=10)
+                rerank = rerank_results(
+                    raw_results, pre_k=10, post_k=5, threshold=0.25,
+                )
+                rag_results = rerank["results"]
+                logger.debug("[agent] RAG retrieved %d → filtered+reranked → %d chunks",
+                             rerank["before_count"], rerank["after_count"])
             except Exception as exc:
                 logger.warning("[agent] RAG retrieval failed: %s", exc)
 
@@ -161,6 +168,114 @@ class ChatAgent:
             },
             "rag_available": bool(rag_results),
             "elapsed_ms": elapsed_ms,
+        }
+
+    async def compare_all_rag(
+        self,
+        question: str,
+        pre_k: int = 10,
+        post_k: int = 5,
+        threshold: float = 0.3,
+        rewrite: str = "keywords",
+        use_mmr: bool = True,
+    ) -> dict:
+        """Compare LLM answers across 5 modes:
+        no-rag, rag-basic, rag+rewrite, rag+rerank, rag+rewrite+rerank
+        """
+        if not self.rag_store:
+            return {"error": "RAG store unavailable", "question": question}
+
+        retriever = RAGRetriever(self.rag_store)
+        system_prompt = self._build_system_prompt()
+
+        async def _ask(messages_override: list[dict], label: str) -> dict:
+            t0 = time.monotonic()
+            answer, usage, _ = await self._call_api(messages_override)
+            return {
+                "mode": label,
+                "answer": answer,
+                "usage": usage,
+                "elapsed_ms": round((time.monotonic() - t0) * 1000),
+            }
+
+        # ── Build all message sets ──────────────────────────────────────────
+        base = []
+        if system_prompt:
+            base.append({"role": "system", "content": system_prompt})
+
+        tasks: list[tuple[list[dict], str]] = []
+
+        # Mode 1: no RAG
+        tasks.append((base + [{"role": "user", "content": question}], "no-rag"))
+
+        # Mode 2: RAG basic (raw query, top post_k)
+        raw_basic = await self.rag_store.retrieve(question, top_k=post_k)
+        basic_block = self.rag_store.build_context_block(raw_basic)
+        tasks.append((
+            base + [{"role": "system", "content": basic_block}, {"role": "user", "content": question}]
+            if basic_block else base + [{"role": "user", "content": question}],
+            "rag-basic",
+        ))
+
+        # Mode 3: RAG + rewrite
+        pipeline_rewrite = await retriever.retrieve(
+            question, pre_k=pre_k, post_k=post_k,
+            threshold=0.0, rewrite=rewrite, use_mmr=False,
+        )
+        rw_block = self.rag_store.build_context_block(pipeline_rewrite["results"])
+        tasks.append((
+            base + [{"role": "system", "content": rw_block}, {"role": "user", "content": question}]
+            if rw_block else base + [{"role": "user", "content": question}],
+            "rag+rewrite",
+        ))
+
+        # Mode 4: RAG + rerank (threshold + MMR, no rewrite)
+        pipeline_rerank = await retriever.retrieve(
+            question, pre_k=pre_k, post_k=post_k,
+            threshold=threshold, rewrite="none", use_mmr=use_mmr,
+        )
+        rr_block = self.rag_store.build_context_block(pipeline_rerank["results"])
+        tasks.append((
+            base + [{"role": "system", "content": rr_block}, {"role": "user", "content": question}]
+            if rr_block else base + [{"role": "user", "content": question}],
+            "rag+rerank",
+        ))
+
+        # Mode 5: RAG + rewrite + rerank (full pipeline)
+        pipeline_full = await retriever.retrieve(
+            question, pre_k=pre_k, post_k=post_k,
+            threshold=threshold, rewrite=rewrite, use_mmr=use_mmr,
+        )
+        full_block = self.rag_store.build_context_block(pipeline_full["results"])
+        tasks.append((
+            base + [{"role": "system", "content": full_block}, {"role": "user", "content": question}]
+            if full_block else base + [{"role": "user", "content": question}],
+            "rag+rewrite+rerank",
+        ))
+
+        # ── Fire all LLM calls in parallel ───────────────────────────────────
+        t0 = time.monotonic()
+        results_list = await asyncio.gather(*[_ask(msgs, label) for msgs, label in tasks])
+        total_elapsed_ms = round((time.monotonic() - t0) * 1000)
+
+        return {
+            "question": question,
+            "modes": {r["mode"]: r for r in results_list},
+            "pipeline_info": {
+                "pre_k": pre_k,
+                "post_k": post_k,
+                "threshold": threshold,
+                "rewrite_strategy": rewrite,
+                "use_mmr": use_mmr,
+                "rewritten_query": pipeline_full["query_rewritten"],
+                "chunks_before_rerank": pipeline_full["before_rerank"],
+                "chunks_after_rerank": pipeline_full["after_rerank"],
+                "retrieved_chunks": [
+                    {"text": c["text"][:300], "source": c["source"], "section": c["section"], "score": c["score"]}
+                    for c in pipeline_full["results"]
+                ],
+            },
+            "total_elapsed_ms": total_elapsed_ms,
         }
 
     def get_history(self) -> list[dict]:

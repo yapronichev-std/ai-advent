@@ -9,6 +9,36 @@ import chromadb
 
 logger = logging.getLogger(__name__)
 
+# ── Stop words for query rewriting ──────────────────────────────────────────
+_STOP_WORDS: set[str] = {
+    # English
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "can", "shall", "to", "of", "in", "for",
+    "on", "with", "at", "by", "from", "as", "into", "through", "during",
+    "before", "after", "above", "below", "between", "under", "again",
+    "further", "then", "once", "here", "there", "when", "where", "why",
+    "how", "all", "both", "each", "few", "more", "most", "other", "some",
+    "such", "no", "not", "only", "own", "same", "so", "than", "too",
+    "very", "just", "about", "also", "if", "or", "and", "but", "this",
+    "that", "it", "its", "he", "she", "they", "them", "their", "we",
+    "you", "i", "me", "my", "your", "our",
+    # Русские
+    "в", "на", "с", "и", "к", "по", "из", "от", "для", "как", "что",
+    "это", "так", "или", "но", "да", "нет", "не", "ни", "бы", "ли",
+    "же", "то", "все", "всё", "она", "оно", "они", "мы", "вы", "ты",
+    "меня", "мне", "тебя", "тебе", "себя", "себе", "весь", "вся",
+    "мой", "твой", "свой", "наш", "ваш", "его", "её", "их", "кто",
+    "кого", "кому", "кем", "ком", "чей", "чья", "чьё", "чьи", "где",
+    "куда", "откуда", "зачем", "почему", "когда", "какой", "какая",
+    "какое", "какие", "который", "которая", "которое", "которые",
+    "быть", "есть", "был", "была", "было", "были", "буду", "будет",
+    "будут", "чтобы", "если", "хотя", "пока", "после", "до", "без",
+    "над", "под", "при", "про", "через", "из-за", "около", "уже",
+    "ещё", "еще", "только", "очень", "можно", "надо", "нужно",
+    "ко", "во", "со", "об", "обо", "ото", "перед", "между", "ради",
+}
+
 OLLAMA_URL = "http://localhost:11434/api/embeddings"
 EMBED_MODEL = "nomic-embed-text"
 CHUNK_SIZE = 500
@@ -338,3 +368,208 @@ class RAGStore:
             label = f" [{' / '.join(parts)}]" if parts else (f" [{r['source']}]" if r["source"] else "")
             lines.append(f"({i}){label} {r['text']}")
         return "\n".join(lines)
+
+
+# ── Query Rewriting ─────────────────────────────────────────────────────────
+
+def rewrite_query_keywords(query: str) -> str:
+    """Extract key terms from query, dropping stop words and short tokens."""
+    tokens = re.findall(r"[a-zA-Zа-яёА-ЯЁ0-9_]{2,}", query.lower())
+    keywords = [t for t in tokens if t not in _STOP_WORDS]
+    return " ".join(keywords) if keywords else query
+
+
+def rewrite_query_expand(query: str) -> str:
+    """Generate an expanded query by duplicating key noun phrases."""
+    keywords = rewrite_query_keywords(query)
+    if not keywords:
+        return query
+    parts = keywords.split()
+    if len(parts) <= 3:
+        return f"{query} {keywords}"
+    return f"{query} {' '.join(parts[: max(3, len(parts) // 2)])}"
+
+
+RewriteStrategy = Literal["none", "keywords", "expand"]
+
+
+def rewrite_query(query: str, strategy: RewriteStrategy = "keywords") -> str:
+    if strategy == "keywords":
+        return rewrite_query_keywords(query)
+    elif strategy == "expand":
+        return rewrite_query_expand(query)
+    return query
+
+
+# ── Reranker ────────────────────────────────────────────────────────────────
+
+def apply_score_threshold(
+    results: list[dict],
+    threshold: float = 0.3,
+    post_k: int = 5,
+) -> list[dict]:
+    """Filter chunks by minimum similarity score, then take top post_k."""
+    filtered = [r for r in results if r["score"] >= threshold]
+    filtered.sort(key=lambda r: r["score"], reverse=True)
+    return filtered[:post_k]
+
+
+def apply_mmr(
+    results: list[dict],
+    post_k: int = 5,
+    lambda_param: float = 0.7,
+) -> list[dict]:
+    """Maximum Marginal Relevance — balance relevance with diversity.
+
+    lambda_param: 1.0 = pure relevance, 0.0 = pure diversity.
+    Default 0.7 favours relevance while penalising near-duplicate chunks.
+    """
+    if len(results) <= post_k:
+        return list(results)
+
+    # Build a crude token-overlap similarity matrix (Jaccard-based)
+    def tokenize(text: str) -> set[str]:
+        return set(re.findall(r"[a-zA-Zа-яёА-ЯЁ0-9_]{2,}", text.lower()))
+
+    token_sets = [tokenize(r["text"]) for r in results]
+
+    def jaccard(a: set[str], b: set[str]) -> float:
+        if not a or not b:
+            return 0.0
+        return len(a & b) / len(a | b)
+
+    selected: list[int] = []
+    remaining = list(range(len(results)))
+
+    # First pick: highest score
+    best = max(remaining, key=lambda i: results[i]["score"])
+    selected.append(best)
+    remaining.remove(best)
+
+    while remaining and len(selected) < post_k:
+        scores = []
+        for i in remaining:
+            relevance = results[i]["score"]
+            diversity = max(jaccard(token_sets[i], token_sets[s]) for s in selected) if selected else 0.0
+            mmr = lambda_param * relevance - (1 - lambda_param) * diversity
+            scores.append(mmr)
+        best = remaining[max(range(len(scores)), key=lambda j: scores[j])]
+        selected.append(best)
+        remaining.remove(best)
+
+    return [results[i] for i in selected]
+
+
+def rerank_results(
+    results: list[dict],
+    pre_k: int = 10,
+    post_k: int = 5,
+    threshold: float = 0.0,
+    use_mmr: bool = True,
+    mmr_lambda: float = 0.7,
+) -> dict:
+    """Full reranking pipeline.
+
+    Args:
+        results: raw retrieval results (sorted by score descending)
+        pre_k: take this many before reranking
+        post_k: return this many after reranking
+        threshold: minimum similarity score (0-1). Chunks below are discarded.
+        use_mmr: apply MMR diversity reranking after threshold filtering
+        mmr_lambda: relevance vs diversity weight (1.0 = pure relevance)
+
+    Returns:
+        dict with 'results', 'before_count', 'after_count', 'threshold', 'pre_k', 'post_k'
+    """
+    before_count = len(results)
+
+    # Step 1: limit to pre_k
+    candidates = results[:pre_k]
+
+    # Step 2: filter by threshold
+    if threshold > 0:
+        candidates = [r for r in candidates if r["score"] >= threshold]
+
+    filtered_count = len(candidates)
+
+    # Step 3: MMR diversity reranking (or pure score sort)
+    if use_mmr and len(candidates) > 1:
+        candidates = apply_mmr(candidates, post_k=post_k, lambda_param=mmr_lambda)
+    else:
+        candidates.sort(key=lambda r: r["score"], reverse=True)
+        candidates = candidates[:post_k]
+
+    return {
+        "results": candidates,
+        "before_count": before_count,
+        "after_count": len(candidates),
+        "threshold": threshold,
+        "pre_k": pre_k,
+        "post_k": post_k,
+    }
+
+
+# ── RAG Retriever (orchestrates retrieval + rerank + rewrite) ───────────────
+
+class RAGRetriever:
+    """Orchestrates the full retrieval pipeline: query rewrite → search → rerank."""
+
+    def __init__(self, store: "RAGStore"):
+        self.store = store
+
+    async def retrieve(
+        self,
+        query: str,
+        pre_k: int = 10,
+        post_k: int = 5,
+        threshold: float = 0.0,
+        rewrite: RewriteStrategy = "none",
+        use_mmr: bool = True,
+        mmr_lambda: float = 0.7,
+    ) -> dict:
+        """Run the full pipeline and return results + metadata about each stage.
+
+        Returns:
+            {
+                "query_original": str,
+                "query_rewritten": str or None,
+                "rewrite_strategy": str,
+                "results": [...],
+                "before_rerank": int,
+                "after_rerank": int,
+                "threshold": float,
+                "pre_k": int,
+                "post_k": int,
+            }
+        """
+        # Stage 1: Query rewrite
+        rewritten = None
+        search_query = query
+        if rewrite != "none":
+            rewritten = rewrite_query(query, strategy=rewrite)
+            search_query = rewritten
+
+        # Stage 2: Semantic search with pre_k
+        raw_results = await self.store.retrieve(search_query, top_k=pre_k)
+
+        # Stage 3: Rerank
+        rerank = rerank_results(
+            raw_results,
+            pre_k=pre_k,
+            post_k=post_k,
+            threshold=threshold,
+            use_mmr=use_mmr,
+            mmr_lambda=mmr_lambda,
+        )
+
+        return {
+            "query_original": query,
+            "query_rewritten": rewritten,
+            "rewrite_strategy": rewrite,
+            "results": rerank["results"],
+            "before_rerank": rerank["before_count"],
+            "after_rerank": rerank["after_count"],
+            "threshold": threshold,
+            "pre_k": pre_k,
+            "post_k": post_k,
+        }

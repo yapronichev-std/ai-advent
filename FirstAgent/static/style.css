@@ -1458,3 +1458,143 @@ body {
     color: #6b7280;
     text-align: center;
 }
+
+/* ── RAG Reranker Controls ─────────────────────────────────────────────────── */
+
+.rag-rerank-controls {
+    padding: 6px 0;
+}
+
+.rag-rerank-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.rag-rerank-label {
+    font-size: 11px;
+    color: #6b7280;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    cursor: default;
+    user-select: none;
+}
+
+.rag-rerank-num {
+    width: 48px;
+    padding: 3px 4px;
+    border: 1px solid #d1d5db;
+    border-radius: 4px;
+    font-size: 12px;
+    text-align: center;
+    background: #fff;
+    color: #111827;
+}
+
+.rag-rerank-select {
+    padding: 3px 5px;
+    border: 1px solid #d1d5db;
+    border-radius: 4px;
+    font-size: 11px;
+    background: #fff;
+    color: #111827;
+    cursor: pointer;
+}
+
+/* ── RAG Mode Tabs ─────────────────────────────────────────────────────────── */
+
+.rag-compare-mode-tabs {
+    display: flex;
+    gap: 2px;
+    padding-bottom: 6px;
+}
+
+.rag-mode-tab {
+    padding: 4px 10px;
+    border: 1px solid #d1d5db;
+    background: #f9fafb;
+    color: #6b7280;
+    font-size: 11px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all .15s;
+}
+
+.rag-mode-tab.active {
+    background: #6366f1;
+    color: #fff;
+    border-color: #6366f1;
+}
+
+.rag-mode-tab:hover:not(.active) {
+    background: #e5e7eb;
+    color: #374151;
+}
+
+/* ── RAG Pipeline Info Bar ────────────────────────────────────────────────── */
+
+.rag-pipeline-info {
+    display: flex;
+    gap: 8px;
+    padding: 6px 10px;
+    background: #fefce8;
+    border-bottom: 1px solid #e5e7eb;
+    font-size: 10px;
+    color: #92400e;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.rag-pipeline-info span {
+    white-space: nowrap;
+}
+
+/* ── 5-column comparison layout ────────────────────────────────────────────── */
+
+.rag-qc-cols-all {
+    overflow-x: auto;
+}
+
+.rag-qc-cols-all .rag-qc-col {
+    min-width: 170px;
+    flex: 1 1 0;
+}
+
+.rag-qc-col-winner {
+    background: #f0fdf4 !important;
+    border: 1px solid #86efac !important;
+    border-radius: 4px;
+}
+
+.rag-qc-col-winner .rag-qc-col-title {
+    color: #16a34a;
+}
+
+.rag-qc-stats {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.rag-qc-time {
+    font-size: 11px;
+    color: #9ca3af;
+}
+
+/* ── Chunk scoring visuals ────────────────────────────────────────────────── */
+
+.rag-qc-chunk-filtered {
+    opacity: 0.45;
+    background: #fef2f2;
+}
+
+.rag-qc-score-low {
+    color: #dc2626 !important;
+    font-weight: 600;
+}
+
+.rag-qc-score-ok {
+    color: #16a34a !important;
+}

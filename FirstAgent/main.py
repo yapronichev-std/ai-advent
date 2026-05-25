@@ -23,7 +23,7 @@ from mcp_search_client import MCPSearchClient
 from mcp_telegram_client import MCPTelegramClient
 from mcp_weather import MCPWeatherClient
 from profiles import UserProfileManager
-from rag import RAGStore, compare_strategies
+from rag import RAGStore, RAGRetriever, compare_strategies
 
 load_dotenv()
 
@@ -523,13 +523,23 @@ async def compare_rag_strategies(request: RAGCompareRequest):
 
 
 @app.get("/rag/search")
-async def search_rag(q: str = Query(..., description="Search query"), top_k: int = Query(default=5, ge=1, le=20)):
+async def search_rag(
+    q: str = Query(..., description="Search query"),
+    top_k: int = Query(default=5, ge=1, le=20),
+    pre_k: int = Query(default=10, ge=1, le=50, description="Chunks to fetch before reranking"),
+    threshold: float = Query(default=0.0, ge=0.0, le=1.0, description="Min similarity score (0-1)"),
+    rewrite: str = Query(default="none", pattern="^(none|keywords|expand)$"),
+    use_mmr: bool = Query(default=True),
+):
     if not rag_store:
         raise HTTPException(status_code=503, detail="RAG store unavailable")
     if not q.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
-    results = await rag_store.retrieve(q, top_k=top_k)
-    return {"query": q, "results": results}
+    retriever = RAGRetriever(rag_store)
+    return await retriever.retrieve(
+        q, pre_k=pre_k, post_k=top_k, threshold=threshold,
+        rewrite=rewrite, use_mmr=use_mmr,
+    )
 
 
 class RAGQueryCompareRequest(BaseModel):
@@ -545,3 +555,31 @@ async def rag_query_compare(request: RAGQueryCompareRequest):
         raise HTTPException(status_code=400, detail="Question cannot be empty")
     agent = get_agent(request.user_id)
     return await agent.compare_rag(request.question, top_k=request.top_k)
+
+
+class RAGCompareAllRequest(BaseModel):
+    question: str
+    user_id: str = "default"
+    pre_k: int = 10
+    post_k: int = 5
+    threshold: float = 0.3
+    rewrite: str = "keywords"
+    use_mmr: bool = True
+
+
+@app.post("/rag/compare-all")
+async def rag_compare_all(request: RAGCompareAllRequest):
+    """Compare LLM answers across all RAG modes:
+    no-rag, rag-basic, rag+rewrite, rag+rerank, rag+rewrite+rerank
+    """
+    if not request.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+    agent = get_agent(request.user_id)
+    return await agent.compare_all_rag(
+        question=request.question,
+        pre_k=request.pre_k,
+        post_k=request.post_k,
+        threshold=request.threshold,
+        rewrite=request.rewrite,
+        use_mmr=request.use_mmr,
+    )
