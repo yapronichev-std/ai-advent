@@ -19,6 +19,7 @@ from mcp_telegram_client import MCPTelegramClient
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
 DEFAULT_TOKEN_LIMIT = 1_000_000
 MAX_HISTORY = 10
 MAX_TOOL_RESULT_CHARS = 6_000   # обрезаем тяжёлые ответы (search) перед отправкой в LLM
@@ -27,14 +28,27 @@ MAX_TOOL_RESULT_CHARS = 6_000   # обрезаем тяжёлые ответы (
 _BEHAVIOUR_KEYS = {"name", "language", "response_style"}
 
 
+def _resolve_model_id(model_id: str) -> tuple[str, str]:
+    """Return (provider, actual_model_name) for a model_id.
+
+    provider is 'openrouter' or 'deepseek'.
+    For 'deepseek-direct/' prefix, strips it and returns 'deepseek'.
+    """
+    if model_id.startswith("deepseek-direct/"):
+        return "deepseek", model_id[len("deepseek-direct/"):]
+    return "openrouter", model_id
+
+
 class ChatAgent:
     def __init__(self, api_key: str, model: str, user_id: str = "default",
+                 deepseek_api_key: str = "",
                  mcp_client: Optional[MCPWeatherClient] = None,
                  telegram_client: Optional[MCPTelegramClient] = None,
                  telegram_chat_id: str = "",
                  diagram_pipeline: Optional[DiagramPipeline] = None,
                  rag_store: Optional[RAGStore] = None):
         self.api_key = api_key
+        self.deepseek_api_key = deepseek_api_key
         self.model = model
         self.user_id = user_id
         self.mcp_client = mcp_client
@@ -54,6 +68,9 @@ class ChatAgent:
         self.summary: str = self._load_summary()
         self.memory = MemoryStore(user_id=user_id)
         self.invariants = InvariantStore()
+
+    def set_model(self, model_id: str) -> None:
+        self.model = model_id
 
     async def send_message(self, user_message: str) -> tuple[str, dict, list[str]]:
         command_response = await self._handle_command(user_message)
@@ -771,17 +788,25 @@ class ChatAgent:
             "Ответь СТРОГО одним словом: YES или NO."
         )
         try:
+            provider, actual_model = _resolve_model_id(self.model)
+            if provider == "deepseek":
+                classify_url = DEEPSEEK_URL
+                classify_key = self.deepseek_api_key
+            else:
+                classify_url = OPENROUTER_URL
+                classify_key = self.api_key
+
             headers = {
-                "Authorization": f"Bearer {self.api_key}",
+                "Authorization": f"Bearer {classify_key}",
                 "Content-Type": "application/json",
             }
             async with httpx.AsyncClient(timeout=10.0) as client:
                 for attempt in range(3):
                     resp = await client.post(
-                        OPENROUTER_URL,
+                        classify_url,
                         headers=headers,
                         json={
-                            "model": self.model,
+                            "model": actual_model,
                             "messages": [{"role": "user", "content": prompt}],
                         },
                     )
@@ -801,8 +826,17 @@ class ChatAgent:
             return False
 
     async def _call_api(self, messages: list[dict]) -> tuple[str, dict, list[str]]:
+        provider, actual_model = _resolve_model_id(self.model)
+
+        if provider == "deepseek":
+            api_url = DEEPSEEK_URL
+            auth_key = self.deepseek_api_key
+        else:
+            api_url = OPENROUTER_URL
+            auth_key = self.api_key
+
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {auth_key}",
             "Content-Type": "application/json",
         }
 
@@ -813,13 +847,13 @@ class ChatAgent:
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             while True:
-                payload: dict = {"model": self.model, "messages": current_messages}
+                payload: dict = {"model": actual_model, "messages": current_messages}
                 if tools:
                     payload["tools"] = tools
                     payload["tool_choice"] = "auto"
 
                 for attempt in range(6):
-                    response = await client.post(OPENROUTER_URL, headers=headers, json=payload)
+                    response = await client.post(api_url, headers=headers, json=payload)
                     if response.status_code == 429:
                         retry_after = response.headers.get("Retry-After")
                         wait = int(retry_after) if retry_after and retry_after.isdigit() else 2 ** attempt

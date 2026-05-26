@@ -869,8 +869,13 @@ body {
     display: flex;
     align-items: center;
     gap: 4px;
-    flex: 1;
+    flex-shrink: 0;
+}
+
+.user-bar:last-of-type {
+    flex: 1 1 0;
     justify-content: flex-end;
+    min-width: 0;
 }
 
 .user-label {
@@ -894,6 +899,22 @@ body {
 }
 
 #user-select:focus { border-color: #2563eb; }
+
+#model-select {
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 13px;
+    font-family: inherit;
+    color: #374151;
+    background: #fff;
+    cursor: pointer;
+    outline: none;
+    min-width: 200px;
+    transition: border-color 0.15s;
+}
+
+#model-select:focus { border-color: #2563eb; }
 
 #user-add-btn,
 #user-del-btn {

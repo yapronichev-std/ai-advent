@@ -1,5 +1,6 @@
 // ── State ───────────────────────────────────────────────────────────────────
 let currentUserId = 'default';
+let currentModelId = '';
 
 // ── Main tab switching ───────────────────────────────────────────────────────
 document.querySelectorAll('.main-nav-tab').forEach(btn => {
@@ -29,6 +30,9 @@ const resetTokensBtn   = document.getElementById('reset-tokens-btn');
 const syspromptInput   = document.getElementById('sysprompt-input');
 const syspromptSaveBtn = document.getElementById('sysprompt-save-btn');
 const syspromptStatus  = document.getElementById('sysprompt-status');
+
+// ── Model selector ──────────────────────────────────────────────────────────
+const modelSelect      = document.getElementById('model-select');
 
 // ── User selector elements ─────────────────────────────────────────────────
 const userSelect       = document.getElementById('user-select');
@@ -95,7 +99,7 @@ async function loadUsers() {
 async function switchUser(uid) {
     currentUserId = uid;
     messagesEl.innerHTML = '<div class="empty-state">Start a conversation...</div>';
-    await Promise.all([loadTokenStats(), loadMemory(), loadShortTerm()]);
+    await Promise.all([loadModels(), loadTokenStats(), loadMemory(), loadShortTerm()]);
 }
 
 userSelect.addEventListener('change', () => switchUser(userSelect.value));
@@ -133,6 +137,50 @@ userDelBtn.addEventListener('click', async () => {
     currentUserId = 'default';
     await loadUsers();
     await switchUser('default');
+});
+
+// ── Model selection ────────────────────────────────────────────────────────
+
+async function loadModels() {
+    try {
+        const res = await fetch('/models');
+        if (!res.ok) return;
+        const { models, default: defaultModel } = await res.json();
+
+        modelSelect.innerHTML = '';
+        models.forEach(m => {
+            const opt = document.createElement('option');
+            opt.value = m.id;
+            opt.textContent = m.label + (m.available ? '' : ' (no key)');
+            opt.disabled = !m.available;
+            if (m.id === currentModelId) opt.selected = true;
+            modelSelect.appendChild(opt);
+        });
+
+        // Load current model for this user
+        const modelRes = await fetch(`/model?user_id=${encodeURIComponent(currentUserId)}`);
+        if (modelRes.ok) {
+            const { model } = await modelRes.json();
+            currentModelId = model;
+            if (modelSelect.querySelector(`option[value="${model}"]`)) {
+                modelSelect.value = model;
+            }
+        }
+    } catch (_) {}
+}
+
+modelSelect.addEventListener('change', async () => {
+    const modelId = modelSelect.value;
+    try {
+        const res = await fetch(`/model?user_id=${encodeURIComponent(currentUserId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model_id: modelId }),
+        });
+        if (res.ok) {
+            currentModelId = modelId;
+        }
+    } catch (_) {}
 });
 
 // ── System prompt ──────────────────────────────────────────────────────────
@@ -529,6 +577,7 @@ async function loadShortTerm() {
     } catch (_) {}
 }
 
+loadModels();
 loadUsers();
 loadMemory();
 loadShortTerm();

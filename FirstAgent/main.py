@@ -32,11 +32,20 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
-#MODEL = "arcee-ai/trinity-large-preview:free"
-MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
+DEEPSEEK_API = "https://api.deepseek.com/v1/chat/completions"
+
+AVAILABLE_MODELS = [
+    {"id": "nvidia/nemotron-3-super-120b-a12b:free", "label": "Nemotron (OpenRouter, free)", "provider": "openrouter"},
+    {"id": "deepseek/deepseek-chat", "label": "DeepSeek (OpenRouter)", "provider": "openrouter"},
+    {"id": "deepseek-direct/deepseek-chat", "label": "DeepSeek (Direct API)", "provider": "deepseek", "api_key_env": "DEEPSEEK_API_KEY"},
+]
+
+DEFAULT_MODEL = "deepseek-direct/deepseek-chat"
 
 api_key: str
+deepseek_api_key: str = ""
 agents: dict[str, ChatAgent] = {}
+user_models: dict[str, str] = {}  # user_id → model_id
 profile_manager = UserProfileManager()
 invariant_store = InvariantStore()
 mcp_client: MultiMCPClient | None = None
@@ -49,10 +58,12 @@ rag_store: RAGStore | None = None
 
 def get_agent(user_id: str) -> ChatAgent:
     if user_id not in agents:
+        model_id = user_models.get(user_id, DEFAULT_MODEL)
         agents[user_id] = ChatAgent(
             api_key=api_key,
-            model=MODEL,
+            model=model_id,
             user_id=user_id,
+            deepseek_api_key=deepseek_api_key,
             mcp_client=mcp_client,
             telegram_client=telegram_client,
             telegram_chat_id=telegram_chat_id,
@@ -64,10 +75,11 @@ def get_agent(user_id: str) -> ChatAgent:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global api_key, mcp_client, search_client, telegram_client, telegram_chat_id, diagram_pipeline, rag_store
+    global api_key, deepseek_api_key, mcp_client, search_client, telegram_client, telegram_chat_id, diagram_pipeline, rag_store
     api_key = os.getenv("OPENROUTER_API_KEY", "")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set in .env")
+    deepseek_api_key = os.getenv("DEEPSEEK_API_KEY", "")
 
     # ── Создаём все MCP-клиенты ───────────────────────────────────────────────
     _drawio = MCPDrawioClient()
@@ -110,7 +122,7 @@ async def lifespan(app: FastAPI):
     fallback_model = os.getenv("DRAWIO_FALLBACK_MODEL", "openai/gpt-4o")
     diagram_pipeline = DiagramPipeline(
         api_key=api_key,
-        model=MODEL,
+        model=DEFAULT_MODEL,
         search_client=search_client,
         drawio_client=mcp_client,
         telegram_client=telegram_client,
@@ -425,6 +437,47 @@ async def get_system_prompt():
 async def update_system_prompt(request: SystemPromptRequest):
     save_system_prompt(request.prompt)
     return {"status": "ok", "prompt": request.prompt}
+
+
+# ── Model selection ────────────────────────────────────────────────────────────
+
+class ModelSelectRequest(BaseModel):
+    model_id: str
+
+
+@app.get("/models")
+async def list_models():
+    """Return available models, marking which ones are usable (API key present)."""
+    models_out = []
+    for m in AVAILABLE_MODELS:
+        entry = dict(m)
+        if m["provider"] == "deepseek":
+            entry["available"] = bool(deepseek_api_key)
+        else:
+            entry["available"] = bool(api_key)
+        models_out.append(entry)
+    return {"models": models_out, "default": DEFAULT_MODEL}
+
+
+@app.get("/model")
+async def get_user_model(user_id: str = Query(default="default")):
+    return {"model": user_models.get(user_id, DEFAULT_MODEL), "user_id": user_id}
+
+
+@app.post("/model")
+async def set_user_model(request: ModelSelectRequest, user_id: str = Query(default="default")):
+    valid_ids = {m["id"] for m in AVAILABLE_MODELS}
+    if request.model_id not in valid_ids:
+        raise HTTPException(status_code=400, detail=f"Unknown model. Available: {', '.join(valid_ids)}")
+    # Check API key availability
+    model_def = next(m for m in AVAILABLE_MODELS if m["id"] == request.model_id)
+    if model_def["provider"] == "deepseek" and not deepseek_api_key:
+        raise HTTPException(status_code=400, detail="DEEPSEEK_API_KEY is not set")
+    user_models[user_id] = request.model_id
+    # Update existing agent if any
+    if user_id in agents:
+        agents[user_id].set_model(request.model_id)
+    return {"model": request.model_id, "user_id": user_id}
 
 
 # ── Invariants ────────────────────────────────────────────────────────────────
