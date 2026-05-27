@@ -54,6 +54,35 @@ telegram_client: MCPTelegramClient | None = None
 telegram_chat_id: str = ""
 diagram_pipeline: DiagramPipeline | None = None
 rag_store: RAGStore | None = None
+control_questions: list[dict] = []
+
+
+def _parse_control_questions(filepath: str) -> list[dict]:
+    """Parse контрольные вопросы.txt into a list of {id, question, expected_answer} dicts."""
+    import re
+    path = Path(filepath)
+    if not path.exists():
+        print(f"WARNING: Control questions file not found: {filepath}")
+        return []
+
+    text = path.read_text(encoding="utf-8")
+    questions = []
+    # Pattern: number. question text ... Ожидаемый ответ: answer text
+    # Questions start with a digit followed by a period
+    pattern = re.compile(
+        r'(?:^|\n)(\d+)\.\s+(.*?)\nОжидаемый ответ:\s*(.*?)(?=\n\d+\.\s|\n*\Z)',
+        re.DOTALL,
+    )
+    for match in pattern.finditer(text):
+        num = match.group(1)
+        question = match.group(2).strip().replace('\n', ' ')
+        expected = match.group(3).strip().replace('\n', ' ')
+        questions.append({
+            "id": int(num),
+            "question": question,
+            "expected_answer": expected,
+        })
+    return questions
 
 
 def get_agent(user_id: str) -> ChatAgent:
@@ -143,6 +172,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"WARNING: RAGStore unavailable: {e}")
         rag_store = None
+
+    # ── Control questions ───────────────────────────────────────────────────
+    global control_questions
+    control_questions = _parse_control_questions("docs/горчев/контрольные вопросы.txt")
+    print(f"Control questions loaded: {len(control_questions)}")
 
     yield
 
@@ -595,10 +629,17 @@ async def search_rag(
     )
 
 
+@app.get("/rag/control-questions")
+async def get_control_questions():
+    """Return parsed control questions with expected answers."""
+    return {"questions": control_questions, "count": len(control_questions)}
+
+
 class RAGQueryCompareRequest(BaseModel):
     question: str
     user_id: str = "default"
     top_k: int = 5
+    expected_answer: str = ""
 
 
 @app.post("/rag/query-compare")
@@ -607,7 +648,10 @@ async def rag_query_compare(request: RAGQueryCompareRequest):
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
     agent = get_agent(request.user_id)
-    return await agent.compare_rag(request.question, top_k=request.top_k)
+    result = await agent.compare_rag(request.question, top_k=request.top_k)
+    if request.expected_answer:
+        result["expected_answer"] = request.expected_answer
+    return result
 
 
 class RAGCompareAllRequest(BaseModel):
@@ -618,6 +662,7 @@ class RAGCompareAllRequest(BaseModel):
     threshold: float = 0.3
     rewrite: str = "keywords"
     use_mmr: bool = True
+    expected_answer: str = ""
 
 
 @app.post("/rag/compare-all")
@@ -628,7 +673,7 @@ async def rag_compare_all(request: RAGCompareAllRequest):
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
     agent = get_agent(request.user_id)
-    return await agent.compare_all_rag(
+    result = await agent.compare_all_rag(
         question=request.question,
         pre_k=request.pre_k,
         post_k=request.post_k,
@@ -636,3 +681,6 @@ async def rag_compare_all(request: RAGCompareAllRequest):
         rewrite=request.rewrite,
         use_mmr=request.use_mmr,
     )
+    if request.expected_answer:
+        result["expected_answer"] = request.expected_answer
+    return result

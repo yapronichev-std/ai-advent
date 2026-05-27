@@ -898,9 +898,16 @@ ragModeTabs.forEach(btn => {
     });
 });
 
+function _getExpectedAnswer(question) {
+    const matched = controlQuestions.find(q => q.question === question);
+    return matched ? matched.expected_answer : '';
+}
+
 async function runRagQueryCompare() {
     const question = ragQueryInput.value.trim();
     if (!question) return;
+
+    const expectedAnswer = _getExpectedAnswer(question);
 
     ragQueryBtn.disabled = true;
     ragQueryBtn.textContent = '…';
@@ -912,7 +919,7 @@ async function runRagQueryCompare() {
             const res = await fetch('/rag/query-compare', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ question, user_id: currentUserId, top_k: parseInt(ragPostK.value) || 5 }),
+                body: JSON.stringify({ question, user_id: currentUserId, top_k: parseInt(ragPostK.value) || 5, expected_answer: expectedAnswer }),
             });
             if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || `HTTP ${res.status}`); }
             const data = await res.json();
@@ -926,6 +933,7 @@ async function runRagQueryCompare() {
                 threshold: parseFloat(ragThreshold.value) || 0.3,
                 rewrite: ragRewriteSel.value || 'keywords',
                 use_mmr: ragMmr.checked,
+                expected_answer: expectedAnswer,
             };
             const res = await fetch('/rag/compare-all', {
                 method: 'POST',
@@ -947,7 +955,13 @@ async function runRagQueryCompare() {
 // ── Simple A/B comparison (kept for backward compatibility) ────────────────
 
 function renderRagQueryCompare(data) {
-    const { question, without_rag, with_rag, rag_available, elapsed_ms } = data;
+    const { question, without_rag, with_rag, rag_available, elapsed_ms, expected_answer } = data;
+
+    const expectedBlock = expected_answer ? `
+        <div class="rag-qc-expected">
+            <div class="rag-qc-expected-label">Ожидаемый ответ</div>
+            <div class="rag-qc-expected-text">${escHtml(expected_answer)}</div>
+        </div>` : '';
 
     const chunksHtml = (with_rag.chunks || []).map((c, i) =>
         `<div class="rag-qc-chunk">
@@ -963,6 +977,7 @@ function renderRagQueryCompare(data) {
         : `<span class="rag-qc-badge rag-qc-badge-off">no docs indexed</span>`;
 
     ragQueryResult.innerHTML = `
+        ${expectedBlock}
         <div class="rag-qc-header">
             <span class="rag-qc-question">${escHtml(question)}</span>
             <span class="rag-qc-elapsed">${elapsed_ms} ms</span>
@@ -991,7 +1006,13 @@ function renderRagQueryCompare(data) {
 // ── Full 5-mode comparison ─────────────────────────────────────────────────
 
 function renderRagCompareAll(data) {
-    const { question, modes, pipeline_info, total_elapsed_ms } = data;
+    const { question, modes, pipeline_info, total_elapsed_ms, expected_answer } = data;
+
+    const expectedBlock = expected_answer ? `
+        <div class="rag-qc-expected">
+            <div class="rag-qc-expected-label">Ожидаемый ответ</div>
+            <div class="rag-qc-expected-text">${escHtml(expected_answer)}</div>
+        </div>` : '';
 
     const MODE_LABELS = {
         'no-rag': 'No RAG',
@@ -1034,6 +1055,7 @@ function renderRagCompareAll(data) {
     ).join('');
 
     ragQueryResult.innerHTML = `
+        ${expectedBlock}
         <div class="rag-qc-header">
             <span class="rag-qc-question">${escHtml(question)}</span>
             <span class="rag-qc-elapsed">${total_elapsed_ms} ms total</span>
@@ -1062,3 +1084,62 @@ ragQueryBtn.addEventListener('click', runRagQueryCompare);
 ragQueryInput.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runRagQueryCompare(); }
 });
+
+// ── Control Questions ──────────────────────────────────────────────────────────
+
+const ragCtrlList     = document.getElementById('rag-ctrl-list');
+const ragCtrlExpected = document.getElementById('rag-ctrl-expected');
+const ragCtrlExpectedText = document.getElementById('rag-ctrl-expected-text');
+
+let controlQuestions = [];
+let selectedQuestionId = null;
+
+async function loadControlQuestions() {
+    try {
+        const res = await fetch('/rag/control-questions');
+        if (!res.ok) return;
+        const data = await res.json();
+        controlQuestions = data.questions || [];
+        renderControlQuestions();
+    } catch (_) {}
+}
+
+function renderControlQuestions() {
+    ragCtrlList.innerHTML = '';
+    if (!controlQuestions.length) {
+        const el = document.createElement('div');
+        el.className = 'mem-empty';
+        el.textContent = '(no questions)';
+        ragCtrlList.appendChild(el);
+        return;
+    }
+    controlQuestions.forEach(q => {
+        const el = document.createElement('div');
+        el.className = 'rag-ctrl-item';
+        if (q.id === selectedQuestionId) el.classList.add('selected');
+        el.innerHTML = `<span class="rag-ctrl-item-num">${q.id}.</span>${escHtml(q.question)}`;
+        el.title = q.question;
+        el.addEventListener('click', () => selectControlQuestion(q));
+        ragCtrlList.appendChild(el);
+    });
+}
+
+function selectControlQuestion(q) {
+    selectedQuestionId = q.id;
+    renderControlQuestions();
+
+    // Fill the query input
+    ragQueryInput.value = q.question;
+
+    // Show expected answer in the left panel
+    ragCtrlExpected.hidden = false;
+    ragCtrlExpectedText.textContent = q.expected_answer;
+}
+
+// Load control questions when switching to RAG tab
+const ragTabBtn = document.querySelector('.main-nav-tab[data-tab="rag"]');
+if (ragTabBtn) {
+    ragTabBtn.addEventListener('click', () => {
+        loadControlQuestions();
+    });
+}

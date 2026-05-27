@@ -1619,3 +1619,99 @@ body {
 .rag-qc-score-ok {
     color: #16a34a !important;
 }
+
+/* ── Control Questions Panel ────────────────────────────────────────────────── */
+
+.rag-ctrl-title {
+    margin-top: 12px;
+}
+
+.rag-ctrl-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.rag-ctrl-item {
+    padding: 6px 8px;
+    border-radius: 5px;
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    font-size: 11px;
+    color: #374151;
+    cursor: pointer;
+    transition: all 0.12s;
+    line-height: 1.4;
+}
+
+.rag-ctrl-item:hover {
+    background: #eff6ff;
+    border-color: #93c5fd;
+    color: #1d4ed8;
+}
+
+.rag-ctrl-item.selected {
+    background: #dbeafe;
+    border-color: #6366f1;
+    color: #1e40af;
+    font-weight: 500;
+}
+
+.rag-ctrl-item-num {
+    font-weight: 600;
+    color: #6366f1;
+    margin-right: 4px;
+    font-size: 10px;
+}
+
+.rag-ctrl-expected {
+    margin-top: 6px;
+    padding: 6px 8px;
+    background: #fefce8;
+    border: 1px solid #fde68a;
+    border-radius: 6px;
+    font-size: 11px;
+}
+
+.rag-ctrl-expected-label {
+    font-weight: 600;
+    color: #92400e;
+    margin-bottom: 3px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+}
+
+.rag-ctrl-expected-text {
+    color: #78350f;
+    line-height: 1.5;
+    white-space: pre-wrap;
+}
+
+/* ── Expected answer in comparison results ─────────────────────────────────── */
+
+.rag-qc-expected {
+    margin: 8px 12px 0;
+    padding: 8px 12px;
+    background: #fefce8;
+    border: 1px solid #fde68a;
+    border-radius: 6px;
+}
+
+.rag-qc-expected-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: #92400e;
+    margin-bottom: 4px;
+}
+
+.rag-qc-expected-text {
+    font-size: 13px;
+    color: #78350f;
+    line-height: 1.6;
+    white-space: pre-wrap;
+}
