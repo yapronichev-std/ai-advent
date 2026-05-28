@@ -104,6 +104,7 @@ class ChatAgent:
         self.history.append({"role": "user", "content": user_message})
 
         rag_results: list[dict] = []
+        rag_no_context = False
         if self.rag_store:
             try:
                 search_query = rewrite_query(user_message, strategy="keywords")
@@ -113,12 +114,14 @@ class ChatAgent:
                     raw_results, pre_k=10, post_k=5, threshold=0.25,
                 )
                 rag_results = rerank["results"]
+                if not rag_results and rerank["before_count"] > 0:
+                    rag_no_context = True
                 logger.debug("[agent] RAG retrieved %d → filtered+reranked → %d chunks",
                              rerank["before_count"], rerank["after_count"])
             except Exception as exc:
                 logger.warning("[agent] RAG retrieval failed: %s", exc)
 
-        messages = self._build_messages(rag_results=rag_results)
+        messages = self._build_messages(rag_results=rag_results, rag_no_context=rag_no_context)
         t0 = time.monotonic()
         response_text, usage, diagram_urls = await self._call_api(messages)
         usage["response_time_ms"] = round((time.monotonic() - t0) * 1000)
@@ -158,6 +161,7 @@ class ChatAgent:
             rag_block = self.rag_store.build_context_block(rag_results)
             if rag_block:
                 rag_messages.append({"role": "system", "content": rag_block})
+                rag_messages.append({"role": "system", "content": self.rag_store.build_rag_output_instructions()})
         rag_messages.append({"role": "user", "content": question})
 
         # 4. Fire both LLM calls in parallel
@@ -225,14 +229,20 @@ class ChatAgent:
         # Mode 1: no RAG
         tasks.append((base + [{"role": "user", "content": question}], "no-rag"))
 
+        instructions = self.rag_store.build_rag_output_instructions()
+
         # Mode 2: RAG basic (raw query, top post_k)
         raw_basic = await self.rag_store.retrieve(question, top_k=post_k)
         basic_block = self.rag_store.build_context_block(raw_basic)
-        tasks.append((
-            base + [{"role": "system", "content": basic_block}, {"role": "user", "content": question}]
-            if basic_block else base + [{"role": "user", "content": question}],
-            "rag-basic",
-        ))
+        if basic_block:
+            tasks.append((
+                base + [{"role": "system", "content": basic_block},
+                        {"role": "system", "content": instructions},
+                        {"role": "user", "content": question}],
+                "rag-basic",
+            ))
+        else:
+            tasks.append((base + [{"role": "user", "content": question}], "rag-basic"))
 
         # Mode 3: RAG + rewrite
         pipeline_rewrite = await retriever.retrieve(
@@ -240,11 +250,15 @@ class ChatAgent:
             threshold=0.0, rewrite=rewrite, use_mmr=False,
         )
         rw_block = self.rag_store.build_context_block(pipeline_rewrite["results"])
-        tasks.append((
-            base + [{"role": "system", "content": rw_block}, {"role": "user", "content": question}]
-            if rw_block else base + [{"role": "user", "content": question}],
-            "rag+rewrite",
-        ))
+        if rw_block:
+            tasks.append((
+                base + [{"role": "system", "content": rw_block},
+                        {"role": "system", "content": instructions},
+                        {"role": "user", "content": question}],
+                "rag+rewrite",
+            ))
+        else:
+            tasks.append((base + [{"role": "user", "content": question}], "rag+rewrite"))
 
         # Mode 4: RAG + rerank (threshold + MMR, no rewrite)
         pipeline_rerank = await retriever.retrieve(
@@ -252,11 +266,15 @@ class ChatAgent:
             threshold=threshold, rewrite="none", use_mmr=use_mmr,
         )
         rr_block = self.rag_store.build_context_block(pipeline_rerank["results"])
-        tasks.append((
-            base + [{"role": "system", "content": rr_block}, {"role": "user", "content": question}]
-            if rr_block else base + [{"role": "user", "content": question}],
-            "rag+rerank",
-        ))
+        if rr_block:
+            tasks.append((
+                base + [{"role": "system", "content": rr_block},
+                        {"role": "system", "content": instructions},
+                        {"role": "user", "content": question}],
+                "rag+rerank",
+            ))
+        else:
+            tasks.append((base + [{"role": "user", "content": question}], "rag+rerank"))
 
         # Mode 5: RAG + rewrite + rerank (full pipeline)
         pipeline_full = await retriever.retrieve(
@@ -264,11 +282,15 @@ class ChatAgent:
             threshold=threshold, rewrite=rewrite, use_mmr=use_mmr,
         )
         full_block = self.rag_store.build_context_block(pipeline_full["results"])
-        tasks.append((
-            base + [{"role": "system", "content": full_block}, {"role": "user", "content": question}]
-            if full_block else base + [{"role": "user", "content": question}],
-            "rag+rewrite+rerank",
-        ))
+        if full_block:
+            tasks.append((
+                base + [{"role": "system", "content": full_block},
+                        {"role": "system", "content": instructions},
+                        {"role": "user", "content": question}],
+                "rag+rewrite+rerank",
+            ))
+        else:
+            tasks.append((base + [{"role": "user", "content": question}], "rag+rewrite+rerank"))
 
         # ── Fire all LLM calls in parallel ───────────────────────────────────
         t0 = time.monotonic()
@@ -339,7 +361,7 @@ class ChatAgent:
 
     # ── Построение сообщений ──────────────────────────────────────────────
 
-    def _build_messages(self, rag_results: list[dict] | None = None) -> list[dict]:
+    def _build_messages(self, rag_results: list[dict] | None = None, rag_no_context: bool = False) -> list[dict]:
         messages = []
         system_prompt = self._build_system_prompt()
         if system_prompt:
@@ -350,10 +372,13 @@ class ChatAgent:
         memory_context = self.memory.build_context_block()
         if memory_context:
             messages.append({"role": "system", "content": memory_context})
-        if rag_results and self.rag_store:
+        if rag_no_context and self.rag_store:
+            messages.append({"role": "system", "content": self.rag_store.build_no_context_instructions()})
+        elif rag_results and self.rag_store:
             rag_block = self.rag_store.build_context_block(rag_results)
             if rag_block:
                 messages.append({"role": "system", "content": rag_block})
+                messages.append({"role": "system", "content": self.rag_store.build_rag_output_instructions()})
         task_fsm = self.memory.get_task_state()
         if task_fsm:
             allowed = task_fsm.allowed_commands()

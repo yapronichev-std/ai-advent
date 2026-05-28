@@ -361,13 +361,45 @@ class RAGStore:
         lines = ["[RAG CONTEXT — relevant documents retrieved by semantic search]"]
         for i, r in enumerate(results, 1):
             parts = []
+            if r.get("source"):
+                parts.append(f"source: {r['source']}")
             if r.get("title"):
                 parts.append(r["title"])
             if r.get("section"):
-                parts.append(r["section"])
-            label = f" [{' / '.join(parts)}]" if parts else (f" [{r['source']}]" if r["source"] else "")
-            lines.append(f"({i}){label} {r['text']}")
+                parts.append(f"section: {r['section']}")
+            if r.get("chunk_id"):
+                parts.append(f"chunk_id: {r['chunk_id']}")
+            label = f" [{' / '.join(parts)}]" if parts else ""
+            lines.append(f"({i}){label} (score: {r.get('score', 0):.3f})\n{r['text']}")
         return "\n".join(lines)
+
+    @staticmethod
+    def build_rag_output_instructions() -> str:
+        return (
+            "[RAG OUTPUT FORMAT — MANDATORY]\n"
+            "You MUST structure your response as follows:\n\n"
+            "1. ANSWER: Provide a direct answer to the user's question based on the retrieved context.\n\n"
+            "2. SOURCES: List every source you used, in format:\n"
+            "   - source (section: name, chunk_id: id)\n\n"
+            "3. QUOTES: For each claim, include a relevant quote from the retrieved chunks.\n"
+            "   Format quotes as: «...quoted text from chunk...»\n\n"
+            "If the retrieved context does NOT contain enough information to answer the question, "
+            'you MUST respond with "Я не знаю ответа на этот вопрос. В найденных документах недостаточно информации. '
+            'Пожалуйста, уточните вопрос или предоставьте дополнительные материалы." '
+            "and ask a clarifying question."
+        )
+
+    @staticmethod
+    def build_no_context_instructions() -> str:
+        return (
+            "[RAG — No relevant context found]\n"
+            "Semantic search did not find documents relevant enough to answer the user's question. "
+            "The relevance scores of all retrieved chunks were below the required threshold.\n\n"
+            "You MUST respond with:\n"
+            '"Я не знаю ответа на этот вопрос. В найденных документах недостаточно релевантной информации. '
+            'Пожалуйста, уточните вопрос или предоставьте дополнительные материалы."\n'
+            "Then ask 1-2 clarifying questions that would help find the answer."
+        )
 
 
 # ── Query Rewriting ─────────────────────────────────────────────────────────
