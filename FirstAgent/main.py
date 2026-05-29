@@ -204,6 +204,8 @@ class MessageResponse(BaseModel):
     usage: dict
     user_id: str
     diagram_urls: list[str] = []
+    rag_sources: list[dict] = []
+    rag_no_context: bool = False
 
 
 class FactRequest(BaseModel):
@@ -282,6 +284,8 @@ async def run_demo(request: DemoRequest):
         usage=usage,
         user_id=request.user_id,
         diagram_urls=diagram_urls,
+        rag_sources=agent.last_rag_sources,
+        rag_no_context=agent.last_rag_no_context,
     )
 
 
@@ -299,6 +303,8 @@ async def chat(request: MessageRequest):
         usage=usage,
         user_id=request.user_id,
         diagram_urls=diagram_urls,
+        rag_sources=agent.last_rag_sources,
+        rag_no_context=agent.last_rag_no_context,
     )
 
 

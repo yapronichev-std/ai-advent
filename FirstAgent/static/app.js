@@ -308,6 +308,64 @@ function appendDiagrams(msgEl, diagramUrls) {
     messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
+function appendRagSources(msgEl, sources, noContext) {
+    // Show "no context found" note
+    if (noContext) {
+        const el = document.createElement('div');
+        el.className = 'rag-sources';
+        el.innerHTML = '<div class="rag-sources-header">📚 RAG — no relevant documents found</div>' +
+            '<div class="rag-sources-none">All retrieved chunks were below the relevance threshold. ' +
+            'Try rephrasing your question.</div>';
+        msgEl.appendChild(el);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+        return;
+    }
+
+    if (!sources || sources.length === 0) return;
+
+    const container = document.createElement('div');
+    container.className = 'rag-sources';
+
+    const headerLabel = sources.length === 1 ? '1 source' : `${sources.length} sources`;
+    const header = document.createElement('div');
+    header.className = 'rag-sources-header';
+    header.textContent = `📚 ${headerLabel}`;
+
+    const list = document.createElement('div');
+    list.className = 'rag-sources-list';
+
+    sources.forEach((r, i) => {
+        const item = document.createElement('div');
+        item.className = 'rag-source-item';
+
+        // Location: source > section
+        const locParts = [];
+        if (r.source) locParts.push(r.source);
+        if (r.title && r.title !== r.source) locParts.push(r.title);
+        if (r.section && !locParts.includes(r.section)) locParts.push(r.section);
+        const loc = locParts.join(' › ') || '(unknown)';
+
+        const scorePct = Math.round((r.score || 0) * 100);
+        const scoreClass = scorePct >= 70 ? 'rag-score-high' : (scorePct >= 40 ? 'rag-score-mid' : 'rag-score-low');
+
+        // Preview text
+        const preview = (r.text || '').substring(0, 250).replace(/\n/g, ' ');
+        const ellipsis = (r.text || '').length > 250 ? '…' : '';
+
+        item.innerHTML =
+            `<span class="rag-source-loc">${loc}</span>` +
+            `<span class="rag-source-score ${scoreClass}">${scorePct}%</span>` +
+            `<span class="rag-source-preview">${preview}${ellipsis}</span>`;
+
+        list.appendChild(item);
+    });
+
+    container.appendChild(header);
+    container.appendChild(list);
+    msgEl.appendChild(container);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
 function setLoading(loading) {
     sendBtn.disabled  = loading;
     input.disabled    = loading;
@@ -333,6 +391,7 @@ async function sendMessage(text) {
         const data = await res.json();
         thinking.remove();
         const msgEl = appendMessage('assistant', data.response);
+        appendRagSources(msgEl, data.rag_sources || [], data.rag_no_context);
         appendDiagrams(msgEl, data.diagram_urls);
 
         if (data.usage) {

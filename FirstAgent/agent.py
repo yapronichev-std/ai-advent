@@ -57,6 +57,8 @@ class ChatAgent:
         self.diagram_pipeline = diagram_pipeline
         self.rag_store = rag_store
         self._llm_call_count: int = 0
+        self._last_rag_results: list[dict] = []
+        self._last_rag_no_context: bool = False
 
         user_dir = Path("memory") / "users" / user_id
         self._history_file = user_dir / "history.json"
@@ -78,6 +80,8 @@ class ChatAgent:
             self.history.append({"role": "user", "content": user_message})
             self.history.append({"role": "assistant", "content": command_response})
             self._save_history()
+            self._last_rag_results = []
+            self._last_rag_no_context = False
             return command_response, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "response_time_ms": 0}, []
 
         # Проверяем, является ли запрос диаграммным, и запускаем пайплайн
@@ -99,6 +103,8 @@ class ChatAgent:
                     await self._compress_history()
                 self._save_history()
                 await self._push_summary_to_server()
+                self._last_rag_results = []
+                self._last_rag_no_context = False
                 return pipeline_response, usage, diagram_urls
 
         self.history.append({"role": "user", "content": user_message})
@@ -134,6 +140,9 @@ class ChatAgent:
         self._save_history()
         self._accumulate_tokens(usage)
         await self._push_summary_to_server()
+
+        self._last_rag_results = rag_results
+        self._last_rag_no_context = rag_no_context
 
         return response_text, usage, diagram_urls
 
@@ -319,6 +328,14 @@ class ChatAgent:
 
     def get_history(self) -> list[dict]:
         return self.history
+
+    @property
+    def last_rag_sources(self) -> list[dict]:
+        return self._last_rag_results
+
+    @property
+    def last_rag_no_context(self) -> bool:
+        return self._last_rag_no_context
 
     def get_summary(self) -> str:
         return self.summary
