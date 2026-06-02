@@ -91,8 +91,60 @@ def chunk_fixed(
 
 # ── Strategy 2: Structural chunking ──────────────────────────────────────────
 
+MIN_STRUCTURAL_CHUNK = 250  # minimum chars per structural chunk; merge smaller neighbours
+
+
+def _merge_small_chunks(chunks: list[dict]) -> list[dict]:
+    """Merge adjacent chunks that are below MIN_STRUCTURAL_CHUNK into the next chunk.
+
+    Merging preserves section name from the FIRST chunk in the merge group
+    and joins texts with double-newline.
+    """
+    if not chunks:
+        return chunks
+    merged: list[dict] = []
+    buf_text = ""
+    buf_section = ""
+    buf_source = ""
+    buf_title = ""
+    for c in chunks:
+        if buf_text:
+            buf_text += "\n\n" + c["text"]
+        else:
+            buf_text = c["text"]
+            buf_section = c["section"]
+            buf_source = c["source"]
+            buf_title = c["title"]
+        if len(buf_text) >= MIN_STRUCTURAL_CHUNK:
+            merged.append({
+                "text": buf_text,
+                "source": buf_source,
+                "title": buf_title,
+                "section": buf_section,
+                "chunk_id": f"struct_{uuid.uuid4().hex[:8]}",
+                "chunk_index": len(merged),
+                "strategy": "structural",
+            })
+            buf_text = ""
+    if buf_text:
+        merged.append({
+            "text": buf_text,
+            "source": buf_source,
+            "title": buf_title,
+            "section": buf_section,
+            "chunk_id": f"struct_{uuid.uuid4().hex[:8]}",
+            "chunk_index": len(merged),
+            "strategy": "structural",
+        })
+    return merged
+
+
 def chunk_structural(text: str, source: str = "") -> list[dict]:
     """Split text by Markdown headings; fall back to double-newline paragraphs.
+
+    Adjacent sections shorter than MIN_STRUCTURAL_CHUNK are merged so that
+    tightly related sentences (e.g. a heading's single-sentence intro and its
+    follow-up explanation) stay together in one retrieval chunk.
 
     Metadata per chunk: source, title, section (heading text or paragraph_N),
     chunk_id, chunk_index, strategy.
@@ -127,11 +179,11 @@ def chunk_structural(text: str, source: str = "") -> list[dict]:
                         "strategy": "structural",
                     }
                 )
-        return chunks
+        return _merge_small_chunks(chunks)
 
     # Fallback: paragraph splitting
     paragraphs = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
-    return [
+    raw_chunks = [
         {
             "text": para,
             "source": source,
@@ -143,6 +195,7 @@ def chunk_structural(text: str, source: str = "") -> list[dict]:
         }
         for i, para in enumerate(paragraphs)
     ]
+    return _merge_small_chunks(raw_chunks)
 
 
 def split_chunks(
@@ -492,6 +545,34 @@ def apply_mmr(
     return [results[i] for i in selected]
 
 
+def _boost_keyword_match(results: list[dict], query: str, boost_strength: float = 0.12) -> list[dict]:
+    """Add a small score bonus for chunks that share keywords with the query.
+
+    This is a lightweight hybrid-retrieval fix: the embedding model may rank
+    semantically related paragraphs above the literal answer if the answer
+    uses different wording.  Keyword overlap gives the literal match a slight
+    nudge so it isn't buried.
+    """
+    if not query or not results:
+        return results
+    query_tokens = set(re.findall(r"[a-zA-Zа-яёА-ЯЁ0-9_]{3,}", query.lower()))
+    query_keywords = {t for t in query_tokens if t not in _STOP_WORDS}
+    if not query_keywords:
+        return results
+
+    boosted: list[dict] = []
+    for r in results:
+        chunk_tokens = set(re.findall(r"[a-zA-Zа-яёА-ЯЁ0-9_]{3,}", r["text"].lower()))
+        overlap = len(query_keywords & chunk_tokens) / len(query_keywords)
+        bonus = overlap * boost_strength
+        r_copy = dict(r)
+        r_copy["score"] = round(min(r["score"] + bonus, 1.0), 4)
+        boosted.append(r_copy)
+    # Re-sort by boosted score
+    boosted.sort(key=lambda r: r["score"], reverse=True)
+    return boosted
+
+
 def rerank_results(
     results: list[dict],
     pre_k: int = 10,
@@ -499,6 +580,7 @@ def rerank_results(
     threshold: float = 0.0,
     use_mmr: bool = True,
     mmr_lambda: float = 0.7,
+    query: str = "",
 ) -> dict:
     """Full reranking pipeline.
 
@@ -509,14 +591,18 @@ def rerank_results(
         threshold: minimum similarity score (0-1). Chunks below are discarded.
         use_mmr: apply MMR diversity reranking after threshold filtering
         mmr_lambda: relevance vs diversity weight (1.0 = pure relevance)
+        query: original query for keyword-boost (hybrid retrieval nudge)
 
     Returns:
         dict with 'results', 'before_count', 'after_count', 'threshold', 'pre_k', 'post_k'
     """
     before_count = len(results)
 
+    # Step 0: keyword-boost scores so literal matches aren't buried
+    candidates = _boost_keyword_match(results, query)
+
     # Step 1: limit to pre_k
-    candidates = results[:pre_k]
+    candidates = candidates[:pre_k]
 
     # Step 2: filter by threshold
     if threshold > 0:
@@ -592,6 +678,7 @@ class RAGRetriever:
             threshold=threshold,
             use_mmr=use_mmr,
             mmr_lambda=mmr_lambda,
+            query=query,
         )
 
         return {

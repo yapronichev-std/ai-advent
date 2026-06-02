@@ -115,9 +115,10 @@ class ChatAgent:
             try:
                 search_query = rewrite_query(user_message, strategy="none")  # "none" — raw query, query rewrite degrades retrieval for some queries
                 logger.debug("[agent] RAG query rewritten: %r → %r", user_message[:80], search_query[:80])
-                raw_results = await self.rag_store.retrieve(search_query, top_k=10)
+                raw_results = await self.rag_store.retrieve(search_query, top_k=20)
                 rerank = rerank_results(
-                    raw_results, pre_k=10, post_k=5, threshold=0.25,
+                    raw_results, pre_k=15, post_k=5, threshold=0.25,
+                    query=user_message,
                 )
                 rag_results = rerank["results"]
                 if not rag_results and rerank["before_count"] > 0:
