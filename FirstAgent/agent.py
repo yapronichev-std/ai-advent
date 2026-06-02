@@ -113,7 +113,7 @@ class ChatAgent:
         rag_no_context = False
         if self.rag_store:
             try:
-                search_query = rewrite_query(user_message, strategy="keywords")
+                search_query = rewrite_query(user_message, strategy="none")  # "none" — raw query, query rewrite degrades retrieval for some queries
                 logger.debug("[agent] RAG query rewritten: %r → %r", user_message[:80], search_query[:80])
                 raw_results = await self.rag_store.retrieve(search_query, top_k=10)
                 rerank = rerank_results(
