@@ -11,6 +11,12 @@ document.querySelectorAll('.main-nav-tab').forEach(btn => {
         btn.classList.add('active');
         document.getElementById(`tab-${tab}`).classList.add('active');
         if (tab === 'rag') loadRagDocuments();
+        if (tab === 'local') {
+            if (!localHistoryLoaded) {
+                localHistoryLoaded = true;
+                loadLocalHistory();
+            }
+        }
     });
 });
 
@@ -443,6 +449,104 @@ clearBtn.addEventListener('click', async () => {
     await fetch(`/history?user_id=${encodeURIComponent(currentUserId)}`, { method: 'DELETE' });
     messagesEl.innerHTML = '<div class="empty-state">Start a conversation...</div>';
     await loadShortTerm();
+});
+
+// ── Local Chat (Ollama) ─────────────────────────────────────────────────────
+
+const localMessagesEl = document.getElementById('local-messages');
+const localForm      = document.getElementById('local-chat-form');
+const localInput     = document.getElementById('local-input');
+const localSendBtn   = document.getElementById('local-send-btn');
+const localClearBtn  = document.getElementById('local-clear-btn');
+
+let localHistoryLoaded = false;
+
+async function loadLocalHistory() {
+    try {
+        const res = await fetch(`/chat/local/history?user_id=${encodeURIComponent(currentUserId)}`);
+        if (!res.ok) return;
+        const { history } = await res.json();
+        localMessagesEl.innerHTML = '';
+        if (history.length === 0) {
+            localMessagesEl.innerHTML = '<div class="empty-state">Start a conversation with local Llama 3.2 3B...</div>';
+        } else {
+            history.forEach(m => {
+                appendLocalMessage(m.role, m.content);
+            });
+        }
+    } catch (_) {}
+}
+
+function appendLocalMessage(role, text) {
+    const emptyState = localMessagesEl.querySelector('.empty-state');
+    if (emptyState) emptyState.remove();
+
+    const el = document.createElement('div');
+    el.className = `message ${role}`;
+    el.textContent = text;
+    localMessagesEl.appendChild(el);
+    localMessagesEl.scrollTop = localMessagesEl.scrollHeight;
+    return el;
+}
+
+function setLocalLoading(loading) {
+    localSendBtn.disabled = loading;
+    localInput.disabled   = loading;
+}
+
+async function sendLocalMessage(text) {
+    appendLocalMessage('user', text);
+    const thinking = appendLocalMessage('thinking', 'Thinking...');
+    setLocalLoading(true);
+
+    try {
+        const res = await fetch('/chat/local', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, user_id: currentUserId }),
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        thinking.remove();
+        appendLocalMessage('assistant', data.response);
+    } catch (err) {
+        thinking.remove();
+        appendLocalMessage('error', `Error: ${err.message}`);
+    } finally {
+        setLocalLoading(false);
+        localInput.focus();
+    }
+}
+
+localForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const text = localInput.value.trim();
+    if (!text) return;
+    localInput.value = '';
+    localInput.style.height = 'auto';
+    sendLocalMessage(text);
+});
+
+localInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        localForm.dispatchEvent(new Event('submit'));
+    }
+});
+
+localInput.addEventListener('input', () => {
+    localInput.style.height = 'auto';
+    localInput.style.height = `${localInput.scrollHeight}px`;
+});
+
+localClearBtn.addEventListener('click', async () => {
+    await fetch(`/chat/local/history?user_id=${encodeURIComponent(currentUserId)}`, { method: 'DELETE' });
+    localMessagesEl.innerHTML = '<div class="empty-state">Start a conversation with local Llama 3.2 3B...</div>';
 });
 
 // ── Invariants ─────────────────────────────────────────────────────────────

@@ -1,12 +1,13 @@
+import asyncio
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Literal
 
+import httpx
 from dotenv import load_dotenv
-from pathlib import Path
-
-import json
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
@@ -46,6 +47,7 @@ api_key: str
 deepseek_api_key: str = ""
 agents: dict[str, ChatAgent] = {}
 user_models: dict[str, str] = {}  # user_id → model_id
+local_chat_history: dict[str, list[dict]] = {}  # user_id → messages for local Ollama chat
 profile_manager = UserProfileManager()
 invariant_store = InvariantStore()
 mcp_client: MultiMCPClient | None = None
@@ -316,6 +318,73 @@ async def get_history(user_id: str = Query(default="default")):
 @app.delete("/history")
 async def clear_history(user_id: str = Query(default="default")):
     get_agent(user_id).clear_history()
+    return {"status": "ok", "user_id": user_id}
+
+
+# ── Local Chat (Ollama) ───────────────────────────────────────────────────────
+
+OLLAMA_URL = "http://localhost:11434/api/chat"
+LOCAL_MODEL = "llama3.2:3b"
+
+
+class LocalChatResponse(BaseModel):
+    response: str
+    history: list[dict]
+
+
+@app.post("/chat/local", response_model=LocalChatResponse)
+async def chat_local(request: MessageRequest):
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    user_id = request.user_id
+    if user_id not in local_chat_history:
+        local_chat_history[user_id] = []
+
+    history = local_chat_history[user_id]
+    history.append({"role": "user", "content": request.text})
+
+    # Build Ollama-compatible messages (role + content only)
+    ollama_messages = [{"role": m["role"], "content": m["content"]} for m in history]
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        for attempt in range(3):
+            try:
+                resp = await client.post(
+                    OLLAMA_URL,
+                    json={
+                        "model": LOCAL_MODEL,
+                        "messages": ollama_messages,
+                        "stream": False,
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except httpx.HTTPStatusError:
+                raise
+            except Exception:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(1)
+
+    reply = data["message"]["content"]
+    history.append({"role": "assistant", "content": reply})
+
+    return LocalChatResponse(
+        response=reply,
+        history=history,
+    )
+
+
+@app.get("/chat/local/history")
+async def get_local_history(user_id: str = Query(default="default")):
+    return {"history": local_chat_history.get(user_id, []), "user_id": user_id}
+
+
+@app.delete("/chat/local/history")
+async def clear_local_history(user_id: str = Query(default="default")):
+    local_chat_history.pop(user_id, None)
     return {"status": "ok", "user_id": user_id}
 
 

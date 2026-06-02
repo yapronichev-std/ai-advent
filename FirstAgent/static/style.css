@@ -126,6 +126,28 @@ body {
     border-right: 1px solid #e5e7eb;
 }
 
+/* ── Local chat container (full-width, no memory panel) ── */
+.local-chat-container {
+    flex: 1;
+    min-width: 0;
+    background: #fff;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.local-model-badge {
+    font-size: 12px;
+    font-weight: 500;
+    color: #6366f1;
+    background: #eef2ff;
+    border: 1px solid #c7d2fe;
+    border-radius: 6px;
+    padding: 2px 8px;
+    margin-left: 8px;
+    vertical-align: middle;
+}
+
 /* Header */
 .chat-header {
     display: flex;
@@ -142,7 +164,8 @@ body {
     color: #111827;
 }
 
-#clear-btn {
+#clear-btn,
+#local-clear-btn {
     background: none;
     border: 1px solid #d1d5db;
     border-radius: 6px;
@@ -153,7 +176,8 @@ body {
     transition: all 0.15s;
 }
 
-#clear-btn:hover {
+#clear-btn:hover,
+#local-clear-btn:hover {
     background: #f3f4f6;
     color: #374151;
 }
@@ -310,7 +334,8 @@ body {
     background: #fff;
 }
 
-#input {
+#input,
+#local-input {
     flex: 1;
     resize: none;
     border: 1px solid #d1d5db;
@@ -323,9 +348,11 @@ body {
     transition: border-color 0.15s;
 }
 
-#input:focus { border-color: #2563eb; }
+#input:focus,
+#local-input:focus { border-color: #2563eb; }
 
-#send-btn {
+#send-btn,
+#local-send-btn {
     background: #2563eb;
     color: #fff;
     border: none;
@@ -338,8 +365,10 @@ body {
     white-space: nowrap;
 }
 
-#send-btn:hover    { background: #1d4ed8; }
-#send-btn:disabled { background: #93c5fd; cursor: not-allowed; }
+#send-btn:hover,
+#local-send-btn:hover    { background: #1d4ed8; }
+#send-btn:disabled,
+#local-send-btn:disabled { background: #93c5fd; cursor: not-allowed; }
 
 
 /* ── Memory panel ── */
