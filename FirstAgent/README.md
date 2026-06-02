@@ -574,6 +574,183 @@ Endpoint `POST /rag/compare-all` параллельно вызывает LLM с 
 
 ---
 
+### Day 23 — Выбор модели и прямое API DeepSeek
+
+Добавлен выпадающий список выбора модели в интерфейсе и поддержка прямого API DeepSeek (минуя OpenRouter).
+
+#### Поддерживаемые модели
+
+| ID | Лейбл | Провайдер |
+|---|---|---|
+| `nvidia/nemotron-3-super-120b-a12b:free` | Nemotron (OpenRouter, free) | OpenRouter |
+| `deepseek/deepseek-chat` | DeepSeek (OpenRouter) | OpenRouter |
+| `deepseek-direct/deepseek-chat` | DeepSeek (Direct API) | DeepSeek |
+
+#### Прямой API DeepSeek
+
+Модели с префиксом `deepseek-direct/` маршрутизируются напрямую на `https://api.deepseek.com/v1/chat/completions`, а не через OpenRouter. Требует `DEEPSEEK_API_KEY` в `.env`.
+
+Логика маршрутизации — функция `_resolve_model_id()` в `agent.py`:
+- `deepseek-direct/*` → `provider="deepseek"`, URL=`https://api.deepseek.com/v1/chat/completions`
+- всё остальное → `provider="openrouter"`, URL=`https://openrouter.ai/api/v1/chat/completions`
+
+#### API endpoints
+
+| Метод | URL | Описание |
+|---|---|---|
+| `GET` | `/models` | Список доступных моделей с флагами `available` |
+| `GET` | `/model?user_id=...` | Текущая модель пользователя |
+| `POST` | `/model?user_id=...` | Установить модель пользователю (`{"model_id": "..."}`) |
+
+Модель сохраняется per-user (словарь `user_models` в `main.py`), модель по умолчанию — `deepseek-direct/deepseek-chat`.
+
+#### UI
+
+Выпадающий список `Model` в заголовке чата. Модели без API-ключа отображаются как `(no key)` и заблокированы. При смене модели отправляется `POST /model`, агент пользователя обновляется через `agent.set_model()`.
+
+#### Изменённые файлы
+
+| Файл | Что изменилось |
+|---|---|
+| `agent.py` | Функция `_resolve_model_id()`, параметр `deepseek_api_key`, метод `set_model()`; `_call_api` и `_classify_as_diagram` маршрутизируют по провайдеру |
+| `main.py` | Список `AVAILABLE_MODELS`, `DEFAULT_MODEL`, словарь `user_models`; endpoints `/models`, `/model` (GET+POST) |
+| `.env.example` | Добавлен `DEEPSEEK_API_KEY` |
+| `static/index.html` | Выпадающий список `#model-select` в `chat-header` |
+| `static/app.js` | Функции `loadModels()`, обработчик `change` на `#model-select`, `currentModelId` |
+
+---
+
+### Day 24 — Структурированный вывод RAG и отображение источников в чате
+
+Реализован структурированный формат вывода RAG: модель обязана отвечать в формате ANSWER / SOURCES / QUOTES, а при отсутствии релевантного контекста — честно говорить «я не знаю». Источники RAG отображаются под каждым сообщением ассистента в чате.
+
+#### Структурированный формат вывода
+
+В системный промпт инжектятся инструкции `build_rag_output_instructions()`:
+
+```
+[RAG OUTPUT FORMAT — MANDATORY]
+1. ANSWER: прямой ответ на вопрос на основе найденного контекста
+2. SOURCES: список использованных источников в формате:
+   - source (section: name, chunk_id: id)
+3. QUOTES: для каждого утверждения — цитата из чанка в формате «...»
+```
+
+Если релевантный контекст не найден — модель ОБЯЗАНА ответить:
+> «Я не знаю ответа на этот вопрос. В найденных документах недостаточно информации. Пожалуйста, уточните вопрос или предоставьте дополнительные материалы.»
+
+Это решает проблему галлюцинаций при отсутствии релевантных документов.
+
+#### Два сценария RAG в чате
+
+**Релевантные чанки найдены:**
+```
+[RAG CONTEXT] чанк 1 / чанк 2 / ...
+[RAG OUTPUT FORMAT — MANDATORY] ← инструкции
+```
+
+**Чанки найдены, но все ниже порога релевантности:**
+```
+[RAG — No relevant context found]
+Semantic search did not find documents relevant enough...
+Модель ОБЯЗАНА ответить «я не знаю»
+```
+
+#### Отображение источников в чате
+
+Для каждого ответа ассистента, если были использованы RAG-источники, под сообщением отображается блок:
+
+```
+📚 3 sources
+┌──────────────────────────────────────────────────┐
+│ guide.md › Installation              92%         │
+│ Run pip install to get started…                  │
+├──────────────────────────────────────────────────┤
+│ guide.md › Configuration              78%         │
+│ Set your API key in the environment…             │
+└──────────────────────────────────────────────────┘
+```
+
+Цветовая индикация score: зелёный (≥70%), жёлтый (40-69%), красный (<40%).
+
+Если контекст не найден — отображается:
+> 📚 RAG — no relevant documents found
+> All retrieved chunks were below the relevance threshold.
+
+#### Изменённые файлы
+
+| Файл | Что изменилось |
+|---|---|
+| `rag.py` | Методы `build_rag_output_instructions()` и `build_no_context_instructions()` |
+| `agent.py` | Свойства `last_rag_sources`, `last_rag_no_context`; `_build_messages` инжектит `rag_no_context` или `rag_output` инструкции |
+| `main.py` | Поля `rag_sources` и `rag_no_context` в `MessageResponse` |
+| `static/app.js` | Функция `appendRagSources()` — отрисовка блока источников под сообщением |
+| `static/style.css` | Стили `.rag-sources`, `.rag-source-item`, `.rag-source-score`, `.rag-source-preview`, `.rag-sources-none` |
+
+#### Архитектурные решения
+
+- **Структурированный вывод — через system prompt**, а не через tool-calling. Это универсально для любых моделей.
+- **«I don't know» guard** — модель явно инструктирована не выдумывать ответ при отсутствии контекста.
+- **Источники в чате** — пользователь видит, откуда взят ответ, может оценить релевантность.
+- **Graceful degradation** — если RAG недоступен, агент работает как обычно.
+
+---
+
+### Day 25 — Панель контрольных вопросов
+
+Добавлена панель контрольных вопросов на вкладке RAG: можно выбрать вопрос из списка, увидеть ожидаемый ответ и запустить сравнение всех RAG-режимов для проверки качества Retrieval.
+
+#### Источник вопросов
+
+Файл `docs/горчев/контрольные вопросы.txt` парсится при старте сервера. Формат:
+
+```
+1. Как Горчев описывает идеальное мироустройство?
+Ожидаемый ответ: Горчев описывает утопическое общество...
+
+2. Какие основные темы поднимает автор в рассказе «Счастье»?
+Ожидаемый ответ: ...
+```
+
+Парсер (`_parse_control_questions`) использует regex, извлекает номер, текст вопроса и ожидаемый ответ.
+
+#### API
+
+| Метод | URL | Описание |
+|---|---|---|
+| `GET` | `/rag/control-questions` | Список вопросов с ожидаемыми ответами |
+
+#### Интеграция с RAG-сравнением
+
+При выборе вопроса:
+1. Текст вопроса автоматически подставляется в строку поиска
+2. Ожидаемый ответ отображается в левой панели
+3. При запуске сравнения (`/rag/query-compare` или `/rag/compare-all`) ожидаемый ответ передаётся в запросе и отображается над результатами — можно визуально сравнить ответы модели с эталоном
+
+#### UI
+
+В левой колонке вкладки RAG:
+
+- **Список вопросов** — кликабельные строки с номерами и текстом
+- **Блок ожидаемого ответа** — появляется при выборе вопроса, показывает эталонный ответ
+
+#### Изменённые файлы
+
+| Файл | Что изменилось |
+|---|---|
+| `main.py` | Функция `_parse_control_questions()`, глобальная переменная `control_questions`, endpoint `GET /rag/control-questions`; поле `expected_answer` в `RAGQueryCompareRequest` и `RAGCompareAllRequest` |
+| `static/index.html` | Секция «Контрольные вопросы» с `#rag-ctrl-list` и `#rag-ctrl-expected` |
+| `static/app.js` | `controlQuestions[]`, `loadControlQuestions()`, `renderControlQuestions()`, `selectControlQuestion()`, `_getExpectedAnswer()` |
+| `static/style.css` | Стили `.rag-ctrl-item`, `.rag-ctrl-expected`, `.rag-qc-expected` |
+
+#### Архитектурные решения
+
+- **Контрольные вопросы загружаются один раз при старте** — не меняются без перезапуска сервера
+- **Ожидаемый ответ — опциональное поле** — если не передан, UI просто не показывает блок
+- **Интеграция с существующими endpoint сравнения** — минимальные изменения API, обратная совместимость
+
+---
+
 ### Предыдущие доработки
 
 | День | Фича |
