@@ -91,7 +91,7 @@ def chunk_fixed(
 
 # ── Strategy 2: Structural chunking ──────────────────────────────────────────
 
-MIN_STRUCTURAL_CHUNK = 250  # minimum chars per structural chunk; merge smaller neighbours
+MIN_STRUCTURAL_CHUNK = 400  # minimum chars per structural chunk; merge smaller neighbours
 
 
 def _merge_small_chunks(chunks: list[dict]) -> list[dict]:
@@ -383,6 +383,73 @@ class RAGStore:
                 )
         return items
 
+    def retrieve_by_keywords(self, terms: list[str], top_k: int = 10) -> list[dict]:
+        """Return chunks whose text contains at least one of *terms* (case-insensitive).
+
+        Used as a supplement to semantic search for named entities that the
+        embedding model fails to connect.  Scored at 0.85 (above mid-range but
+        below high-confidence semantic matches).
+        """
+        if not terms or self._collection.count() == 0:
+            return []
+        found: list[dict] = []
+        for term in terms:
+            # ChromaDB $contains is case-sensitive — try original and lowered
+            candidates = {term, term.lower(), term.capitalize()}
+            for variant in candidates:
+                try:
+                    results = self._collection.get(
+                        where_document={"$contains": variant},
+                        include=["documents", "metadatas"],
+                    )
+                except Exception:
+                    continue
+                if results["ids"]:
+                    for doc, meta in zip(results["documents"], results["metadatas"]):
+                        fid = meta.get("chunk_id", "")
+                        if any(f["chunk_id"] == fid for f in found):
+                            continue  # dedup
+                        found.append({
+                            "text": doc,
+                            "source": meta.get("source", ""),
+                            "title": meta.get("title", ""),
+                            "section": meta.get("section", ""),
+                            "chunk_id": fid,
+                            "chunk_index": meta.get("chunk_index", 0),
+                            "doc_id": meta.get("doc_id", ""),
+                            "strategy": meta.get("strategy", "fixed"),
+                            "score": 0.97,  # high score so keyword results survive pre_k filtering
+                            "_keyword_match": True,
+                        })
+        return found[:top_k]
+
+    def get_chunk_by_doc_index(self, doc_id: str, chunk_index: int) -> dict | None:
+        """Return a single chunk by doc_id + chunk_index, or None."""
+        try:
+            results = self._collection.get(
+                where={"$and": [
+                    {"doc_id": doc_id},
+                    {"chunk_index": chunk_index},
+                ]},
+                include=["documents", "metadatas"],
+            )
+        except Exception:
+            return None
+        if results["ids"]:
+            meta = results["metadatas"][0]
+            return {
+                "text": results["documents"][0],
+                "source": meta.get("source", ""),
+                "title": meta.get("title", ""),
+                "section": meta.get("section", ""),
+                "chunk_id": meta.get("chunk_id", ""),
+                "doc_id": meta.get("doc_id", ""),
+                "chunk_index": meta.get("chunk_index", 0),
+                "strategy": meta.get("strategy", "fixed"),
+                "score": 0.92,  # neighbor score (base, overridden in agent)
+            }
+        return None
+
     def list_documents(self) -> list[dict]:
         if self._collection.count() == 0:
             return []
@@ -545,7 +612,7 @@ def apply_mmr(
     return [results[i] for i in selected]
 
 
-def _boost_keyword_match(results: list[dict], query: str, boost_strength: float = 0.12) -> list[dict]:
+def _boost_keyword_match(results: list[dict], query: str, boost_strength: float = 0.18) -> list[dict]:
     """Add a small score bonus for chunks that share keywords with the query.
 
     This is a lightweight hybrid-retrieval fix: the embedding model may rank

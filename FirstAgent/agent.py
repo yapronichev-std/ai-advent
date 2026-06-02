@@ -115,12 +115,60 @@ class ChatAgent:
             try:
                 search_query = rewrite_query(user_message, strategy="none")  # "none" — raw query, query rewrite degrades retrieval for some queries
                 logger.debug("[agent] RAG query rewritten: %r → %r", user_message[:80], search_query[:80])
-                raw_results = await self.rag_store.retrieve(search_query, top_k=20)
+                raw_results = await self.rag_store.retrieve(search_query, top_k=35)
+
+                # ── Keyword supplement for named entities ──────────────────────
+                # Extract quoted phrases / story names that the embedding model
+                # may fail to connect to answer paragraphs.
+                import re as _re
+                kw_terms: list[str] = []
+                for m in _re.finditer(r'[«"]([^»"]+)[»"]', user_message):
+                    phrase = m.group(1).strip()
+                    if len(phrase) >= 3:
+                        kw_terms.append(phrase)
+                if kw_terms:
+                    kw_results = self.rag_store.retrieve_by_keywords(kw_terms, top_k=10)
+                    if kw_results:
+                        # Also pull in nearby paragraphs from the same document:
+                        # the keyword match often finds the story TITLE but the
+                        # ANSWER is in the next paragraph.
+                        extra_chunks: list[dict] = []
+                        for kr in kw_results:
+                            doc_id = kr.get("doc_id", "")
+                            ci = kr.get("chunk_index", -1)
+                            if doc_id and ci >= 0:
+                                for offset in (1, 2, 3, -1):
+                                    neighbor = self.rag_store.get_chunk_by_doc_index(doc_id, ci + offset)
+                                    if neighbor:
+                                        neighbor["score"] = kr["score"] - 0.02 * abs(offset)
+                                        extra_chunks.append(neighbor)
+                        # Merge: keyword results + neighbors + original semantic.
+                        # Keyword matches bypass MMR: they are pinned to the final
+                        # context by setting a flag that _build_messages checks.
+                        seen = {r.get("chunk_id", "") for r in raw_results}
+                        pinned_kw: list[dict] = []
+                        for kr in kw_results + extra_chunks:
+                            cid = kr.get("chunk_id", "")
+                            if cid and cid not in seen:
+                                kr["_pinned"] = True  # bypass MMR exclusion
+                                pinned_kw.append(kr)
+                                seen.add(cid)
+                        raw_results = pinned_kw + raw_results
+                        raw_results.sort(key=lambda r: r["score"], reverse=True)
+                        logger.debug("[agent] keyword supplement: %d terms → %d kw + %d neighbors, pool now %d",
+                                     len(kw_terms), len(kw_results), len(extra_chunks), len(raw_results))
+
                 rerank = rerank_results(
-                    raw_results, pre_k=15, post_k=5, threshold=0.25,
+                    raw_results, pre_k=30, post_k=10, threshold=0.25,
                     query=user_message,
                 )
-                rag_results = rerank["results"]
+                # Ensure keyword-pinned chunks always appear in final context
+                final_results = rerank["results"]
+                pinned_ids = {r.get("chunk_id") for r in final_results}
+                for r in raw_results:
+                    if r.get("_pinned") and r.get("chunk_id") not in pinned_ids:
+                        final_results.append(r)
+                rag_results = final_results
                 if not rag_results and rerank["before_count"] > 0:
                     rag_no_context = True
                 logger.debug("[agent] RAG retrieved %d → filtered+reranked → %d chunks",
