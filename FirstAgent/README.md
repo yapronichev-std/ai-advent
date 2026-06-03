@@ -751,6 +751,92 @@ Semantic search did not find documents relevant enough...
 
 ---
 
+### Day 26 — Вкладка Local LLM: чат с локальными моделями (Ollama + llama.cpp)
+
+Добавлена отдельная вкладка «Local LLM» для чата с локальными моделями без использования облачных API. Поддерживаются два источника моделей: **Ollama** и **llama.cpp**.
+
+#### Поддерживаемые провайдеры
+
+| Провайдер | API | Модели |
+|---|---|---|
+| **Ollama** | `localhost:11434/api/chat` | Все чат-модели, установленные в Ollama (llama3.2:3b, gemma4 и др.) |
+| **llama.cpp** | `localhost:8080/v1/chat/completions` | `.gguf` файлы из `llama.cpp/models/` (OpenAI-совместимый API) |
+
+#### API endpoints
+
+| Метод | URL | Описание |
+|---|---|---|
+| `GET` | `/chat/local/models` | Список доступных локальных моделей (Ollama + llama.cpp) с флагами `available` |
+| `GET` | `/chat/local/model?user_id=...` | Текущая выбранная модель пользователя |
+| `POST` | `/chat/local/model?user_id=...` | Установить модель (`{"model_id": "ollama:llama3.2:3b"}`) |
+| `POST` | `/chat/local` | Отправить сообщение в чат с локальной моделью |
+| `GET` | `/chat/local/history?user_id=...` | История локального чата |
+| `DELETE` | `/chat/local/history?user_id=...` | Очистить историю локального чата |
+
+#### Обнаружение моделей
+
+- **Ollama** — через `GET /api/tags`, эмбеддинг-модели (nomic-embed-text и др.) исключаются из списка
+- **llama.cpp** — сканирование папки `models/` на `.gguf` файлы (исключая `ggml-vocab-*`), проверка доступности сервера на `localhost:8080`
+
+Модели отмечаются как `(offline)` и блокируются в селекте, если соответствующий сервер не запущен.
+
+#### Переключатель моделей
+
+В хидере вкладки Local LLM — выпадающий список `Model` для выбора локальной модели. Выбор сохраняется per-user и синхронизирован с бэкендом через `POST /chat/local/model`.
+
+#### UI чата
+
+- Полноэкранный чат без боковой панели памяти — только сообщения, поле ввода и кнопка Clear
+- **Метка модели и времени ответа** — под каждым ответом ассистента отображается бейдж вида `llama3.2:3b · 2.53s`
+- Поле ввода и кнопки стилизованы идентично вкладке Chat
+
+#### Маршрутизация запросов
+
+```
+POST /chat/local
+        │
+        ▼
+_resolve_local_model(user_id)
+        │
+        ├── provider=ollama    → POST localhost:11434/api/chat
+        │                        { "model": "llama3.2:3b", "messages": [...], "stream": false }
+        │
+        └── provider=llamacpp → POST localhost:8080/v1/chat/completions
+                                 { "model": "qwen2.5-1.5b...", "messages": [...] }
+```
+
+История диалога хранится в памяти на сервере (словарь `local_chat_history`, per-user), теряется при перезапуске.
+
+#### Изменённые файлы
+
+| Файл | Что изменилось |
+|---|---|
+| `main.py` | Константы `OLLAMA_URL`, `LLAMACPP_SERVER_URL`, `LLAMACPP_MODELS_DIR`; словари `local_chat_history`, `user_local_models`; функции `_discover_ollama_models()`, `_discover_llamacpp_models()`, `_resolve_local_model()`, `_chat_ollama()`, `_chat_llamacpp()`; endpoints для моделей и чата |
+| `static/index.html` | Вкладка `#tab-local` с контейнером `.local-chat-container`, селектом `#local-model-select`, полем ввода и кнопками |
+| `static/app.js` | `loadLocalModels()`, `loadLocalHistory()`, `appendLocalMessage()`, `sendLocalMessage()`; обработчики селекта моделей, отправки сообщений, очистки истории |
+| `static/style.css` | Стили `.local-chat-container`, `.local-model-badge` (в хидере и внутри сообщений) |
+
+#### Архитектурные решения
+
+- **Локальные модели — без внешних API**: запросы не покидают машину, не требуют API-ключей
+- **Изоляция от основного чата**: история локального чата не пересекается с историей OpenRouter/DeepSeek
+- **Graceful degradation**: если Ollama или llama.cpp сервер недоступен — модель показывается как `(offline)`, но список других провайдеров продолжает работать
+- **Единый интерфейс**: обе вкладки Chat и Local LLM выглядят и работают одинаково (отправка Enter, Shift+Enter для новой строки, авто-resize textarea)
+
+#### Предварительные требования
+
+```bash
+# Ollama (уже должен быть запущен)
+ollama serve
+
+# llama.cpp (опционально)
+/Users/yaroslav/develop/ai-assist/llama.cpp/llama-server \
+  -m models/qwen2.5-1.5b-instruct-q4_k_m.gguf \
+  --port 8080
+```
+
+---
+
 ### Предыдущие доработки
 
 | День | Фича |
