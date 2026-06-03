@@ -136,8 +136,9 @@ body {
     overflow: hidden;
 }
 
+/* Badge in header (next to title) */
 .local-model-badge {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 500;
     color: #6366f1;
     background: #eef2ff;
@@ -146,6 +147,23 @@ body {
     padding: 2px 8px;
     margin-left: 8px;
     vertical-align: middle;
+}
+
+/* Badge inside a message bubble */
+.message.assistant .local-model-badge {
+    display: block;
+    margin: 6px 0 0 0;
+    padding: 3px 8px;
+    font-size: 11px;
+    font-weight: 500;
+    color: #6366f1;
+    background: rgba(99, 102, 241, 0.08);
+    border-top: 1px solid rgba(99, 102, 241, 0.15);
+    border-radius: 0 0 10px 10px;
+    margin-left: -14px;
+    margin-right: -14px;
+    margin-bottom: -8px;
+    text-align: right;
 }
 
 /* Header */
@@ -929,7 +947,8 @@ body {
 
 #user-select:focus { border-color: #2563eb; }
 
-#model-select {
+#model-select,
+#local-model-select {
     border: 1px solid #d1d5db;
     border-radius: 6px;
     padding: 4px 8px;
@@ -943,7 +962,8 @@ body {
     transition: border-color 0.15s;
 }
 
-#model-select:focus { border-color: #2563eb; }
+#model-select:focus,
+#local-model-select:focus { border-color: #2563eb; }
 
 #user-add-btn,
 #user-del-btn {

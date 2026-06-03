@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -321,21 +322,146 @@ async def clear_history(user_id: str = Query(default="default")):
     return {"status": "ok", "user_id": user_id}
 
 
-# ── Local Chat (Ollama) ───────────────────────────────────────────────────────
+# ── Local Chat (Ollama + llama.cpp) ────────────────────────────────────────────
 
-OLLAMA_URL = "http://localhost:11434/api/chat"
-LOCAL_MODEL = "llama3.2:3b"
+OLLAMA_URL = "http://localhost:11434"
+LLAMACPP_SERVER_URL = "http://localhost:8080"
+LLAMACPP_MODELS_DIR = Path("/Users/yaroslav/develop/ai-assist/llama.cpp/models")
+DEFAULT_LOCAL_MODEL = "ollama:llama3.2:3b"
+
+# user_id → list of messages
+local_chat_history: dict[str, list[dict]] = {}
+# user_id → model_id (e.g. "ollama:llama3.2:3b" or "llamacpp:qwen2.5-1.5b-instruct-q4_k_m")
+user_local_models: dict[str, str] = {}
 
 
 class LocalChatResponse(BaseModel):
     response: str
     history: list[dict]
+    model: str
+    model_label: str
+    elapsed_ms: int
+
+
+class LocalModelSelectRequest(BaseModel):
+    model_id: str
+
+
+async def _discover_ollama_models() -> list[dict]:
+    """Query Ollama for installed models. Returns [] if Ollama is not running."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{OLLAMA_URL}/api/tags")
+            resp.raise_for_status()
+            data = resp.json()
+        # Exclude embedding-only models (they can't chat)
+        _non_chat = {"nomic-embed-text", "nomic-embed-text:latest", "all-minilm", "mxbai-embed"}
+        models = []
+        for m in data.get("models", []):
+            name = m.get("name", "")
+            if name and name.split(":")[0] not in _non_chat and name not in _non_chat:
+                models.append({
+                    "id": f"ollama:{name}",
+                    "label": f"{name} (Ollama)",
+                    "provider": "ollama",
+                    "model_name": name,
+                })
+        return models
+    except Exception:
+        return []
+
+
+async def _discover_llamacpp_models() -> list[dict]:
+    """Scan llama.cpp models directory for .gguf files (excluding vocab files)."""
+    models = []
+    if not LLAMACPP_MODELS_DIR.exists():
+        return models
+    for f in sorted(LLAMACPP_MODELS_DIR.iterdir()):
+        if not f.is_file():
+            continue
+        name = f.name
+        if not name.endswith(".gguf"):
+            continue
+        if name.startswith("ggml-vocab-"):
+            continue
+        # Derive a short label from the filename
+        label = name.removesuffix(".gguf")
+        models.append({
+            "id": f"llamacpp:{name}",
+            "label": f"{label} (llama.cpp)",
+            "provider": "llamacpp",
+            "model_name": name,
+            "file_path": str(f),
+        })
+    return models
+
+
+@app.get("/chat/local/models")
+async def list_local_models():
+    """Return available local models from Ollama and llama.cpp."""
+    ollama_models, llamacpp_models = await asyncio.gather(
+        _discover_ollama_models(),
+        _discover_llamacpp_models(),
+    )
+    # Check if llama.cpp server is reachable
+    llamacpp_available = False
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{LLAMACPP_SERVER_URL}/v1/models")
+            llamacpp_available = resp.status_code == 200
+    except Exception:
+        pass
+
+    all_models = ollama_models + llamacpp_models
+    # Mark availability
+    for m in all_models:
+        if m["provider"] == "ollama":
+            m["available"] = True  # we already know Ollama responded
+        elif m["provider"] == "llamacpp":
+            m["available"] = llamacpp_available
+
+    return {
+        "models": all_models,
+        "default": DEFAULT_LOCAL_MODEL,
+        "ollama_running": len(ollama_models) > 0,
+        "llamacpp_running": llamacpp_available,
+    }
+
+
+@app.get("/chat/local/model")
+async def get_local_model(user_id: str = Query(default="default")):
+    model_id = user_local_models.get(user_id, DEFAULT_LOCAL_MODEL)
+    return {"model": model_id, "user_id": user_id}
+
+
+@app.post("/chat/local/model")
+async def set_local_model(request: LocalModelSelectRequest, user_id: str = Query(default="default")):
+    user_local_models[user_id] = request.model_id
+    return {"model": request.model_id, "user_id": user_id}
+
+
+def _resolve_local_model(user_id: str) -> tuple[str, str, str]:
+    """Return (provider, model_name, file_path_or_empty) for the user's selected model."""
+    model_id = user_local_models.get(user_id, DEFAULT_LOCAL_MODEL)
+    if model_id.startswith("ollama:"):
+        return "ollama", model_id[len("ollama:"):], ""
+    elif model_id.startswith("llamacpp:"):
+        name = model_id[len("llamacpp:"):]
+        file_path = str(LLAMACPP_MODELS_DIR / name)
+        return "llamacpp", name, file_path
+    # Fallback
+    return "ollama", "llama3.2:3b", ""
 
 
 @app.post("/chat/local", response_model=LocalChatResponse)
 async def chat_local(request: MessageRequest):
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    t0 = time.monotonic()
+
+    provider, model_name, file_path = _resolve_local_model(request.user_id)
+    model_id = user_local_models.get(request.user_id, DEFAULT_LOCAL_MODEL)
 
     user_id = request.user_id
     if user_id not in local_chat_history:
@@ -344,37 +470,80 @@ async def chat_local(request: MessageRequest):
     history = local_chat_history[user_id]
     history.append({"role": "user", "content": request.text})
 
-    # Build Ollama-compatible messages (role + content only)
-    ollama_messages = [{"role": m["role"], "content": m["content"]} for m in history]
+    if provider == "ollama":
+        reply = await _chat_ollama(history, model_name)
+    elif provider == "llamacpp":
+        reply = await _chat_llamacpp(history, model_name)
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
+
+    history.append({"role": "assistant", "content": reply})
+
+    elapsed_ms = round((time.monotonic() - t0) * 1000)
+
+    # Derive a human-readable label for the model badge
+    model_label = model_name.removesuffix(".gguf") if provider == "llamacpp" else model_name
+
+    return LocalChatResponse(
+        response=reply,
+        history=history,
+        model=model_id,
+        model_label=model_label,
+        elapsed_ms=elapsed_ms,
+    )
+
+
+async def _chat_ollama(history: list[dict], model_name: str) -> str:
+    """Send messages to Ollama chat API."""
+    messages = [{"role": m["role"], "content": m["content"]} for m in history]
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         for attempt in range(3):
             try:
                 resp = await client.post(
-                    OLLAMA_URL,
+                    f"{OLLAMA_URL}/api/chat",
                     json={
-                        "model": LOCAL_MODEL,
-                        "messages": ollama_messages,
+                        "model": model_name,
+                        "messages": messages,
                         "stream": False,
                     },
                 )
                 resp.raise_for_status()
                 data = resp.json()
-                break
+                return data["message"]["content"]
             except httpx.HTTPStatusError:
                 raise
             except Exception:
                 if attempt == 2:
                     raise
                 await asyncio.sleep(1)
+    raise RuntimeError("Ollama: max retries exceeded")
 
-    reply = data["message"]["content"]
-    history.append({"role": "assistant", "content": reply})
 
-    return LocalChatResponse(
-        response=reply,
-        history=history,
-    )
+async def _chat_llamacpp(history: list[dict], model_name: str) -> str:
+    """Send messages to llama.cpp server via OpenAI-compatible API."""
+    messages = [{"role": m["role"], "content": m["content"]} for m in history]
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        for attempt in range(3):
+            try:
+                resp = await client.post(
+                    f"{LLAMACPP_SERVER_URL}/v1/chat/completions",
+                    json={
+                        "model": model_name,
+                        "messages": messages,
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return data["choices"][0]["message"]["content"]
+            except httpx.HTTPStatusError:
+                raise
+            except Exception:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(1)
+    raise RuntimeError("llama.cpp: max retries exceeded")
 
 
 @app.get("/chat/local/history")

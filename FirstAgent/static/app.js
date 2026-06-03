@@ -12,6 +12,9 @@ document.querySelectorAll('.main-nav-tab').forEach(btn => {
         document.getElementById(`tab-${tab}`).classList.add('active');
         if (tab === 'rag') loadRagDocuments();
         if (tab === 'local') {
+            if (!localModelsLoaded) {
+                loadLocalModels();
+            }
             if (!localHistoryLoaded) {
                 localHistoryLoaded = true;
                 loadLocalHistory();
@@ -451,15 +454,66 @@ clearBtn.addEventListener('click', async () => {
     await loadShortTerm();
 });
 
-// ── Local Chat (Ollama) ─────────────────────────────────────────────────────
+// ── Local Chat (Ollama + llama.cpp) ──────────────────────────────────────────
 
-const localMessagesEl = document.getElementById('local-messages');
-const localForm      = document.getElementById('local-chat-form');
-const localInput     = document.getElementById('local-input');
-const localSendBtn   = document.getElementById('local-send-btn');
-const localClearBtn  = document.getElementById('local-clear-btn');
+const localMessagesEl   = document.getElementById('local-messages');
+const localForm         = document.getElementById('local-chat-form');
+const localInput        = document.getElementById('local-input');
+const localSendBtn      = document.getElementById('local-send-btn');
+const localClearBtn     = document.getElementById('local-clear-btn');
+const localModelSelect  = document.getElementById('local-model-select');
 
-let localHistoryLoaded = false;
+let localHistoryLoaded  = false;
+let localModelsLoaded   = false;
+let currentLocalModelId = '';
+
+const LOCAL_EMPTY_STATE = 'Start a conversation with a local model...';
+
+async function loadLocalModels() {
+    try {
+        const res = await fetch('/chat/local/models');
+        if (!res.ok) return;
+        const { models, default: defaultModel } = await res.json();
+
+        localModelSelect.innerHTML = '';
+        models.forEach(m => {
+            const opt = document.createElement('option');
+            opt.value = m.id;
+            opt.textContent = m.label + (m.available ? '' : ' (offline)');
+            opt.disabled = !m.available;
+            if (m.id === currentLocalModelId) opt.selected = true;
+            localModelSelect.appendChild(opt);
+        });
+
+        // Load current model for this user
+        const modelRes = await fetch(`/chat/local/model?user_id=${encodeURIComponent(currentUserId)}`);
+        if (modelRes.ok) {
+            const { model } = await modelRes.json();
+            currentLocalModelId = model;
+            if (localModelSelect.querySelector(`option[value="${model}"]`)) {
+                localModelSelect.value = model;
+            }
+        } else {
+            currentLocalModelId = defaultModel;
+        }
+
+        localModelsLoaded = true;
+    } catch (_) {}
+}
+
+localModelSelect.addEventListener('change', async () => {
+    const modelId = localModelSelect.value;
+    try {
+        const res = await fetch(`/chat/local/model?user_id=${encodeURIComponent(currentUserId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model_id: modelId }),
+        });
+        if (res.ok) {
+            currentLocalModelId = modelId;
+        }
+    } catch (_) {}
+});
 
 async function loadLocalHistory() {
     try {
@@ -468,7 +522,7 @@ async function loadLocalHistory() {
         const { history } = await res.json();
         localMessagesEl.innerHTML = '';
         if (history.length === 0) {
-            localMessagesEl.innerHTML = '<div class="empty-state">Start a conversation with local Llama 3.2 3B...</div>';
+            localMessagesEl.innerHTML = `<div class="empty-state">${LOCAL_EMPTY_STATE}</div>`;
         } else {
             history.forEach(m => {
                 appendLocalMessage(m.role, m.content);
@@ -492,6 +546,7 @@ function appendLocalMessage(role, text) {
 function setLocalLoading(loading) {
     localSendBtn.disabled = loading;
     localInput.disabled   = loading;
+    localModelSelect.disabled = loading;
 }
 
 async function sendLocalMessage(text) {
@@ -513,7 +568,16 @@ async function sendLocalMessage(text) {
 
         const data = await res.json();
         thinking.remove();
-        appendLocalMessage('assistant', data.response);
+        const msgEl = appendLocalMessage('assistant', data.response);
+        if (data.model_label || data.elapsed_ms) {
+            const badge = document.createElement('span');
+            badge.className = 'local-model-badge';
+            const parts = [];
+            if (data.model_label) parts.push(data.model_label);
+            if (data.elapsed_ms != null) parts.push(`${(data.elapsed_ms / 1000).toFixed(2)}s`);
+            badge.textContent = parts.join(' · ');
+            msgEl.appendChild(badge);
+        }
     } catch (err) {
         thinking.remove();
         appendLocalMessage('error', `Error: ${err.message}`);
@@ -546,7 +610,7 @@ localInput.addEventListener('input', () => {
 
 localClearBtn.addEventListener('click', async () => {
     await fetch(`/chat/local/history?user_id=${encodeURIComponent(currentUserId)}`, { method: 'DELETE' });
-    localMessagesEl.innerHTML = '<div class="empty-state">Start a conversation with local Llama 3.2 3B...</div>';
+    localMessagesEl.innerHTML = `<div class="empty-state">${LOCAL_EMPTY_STATE}</div>`;
 });
 
 // ── Invariants ─────────────────────────────────────────────────────────────
