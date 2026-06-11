@@ -837,6 +837,57 @@ ollama serve
 
 ---
 
+### Day 27 — RAG для вкладки Local LLM
+
+RAG-система, ранее работавшая только в основном чате (вкладка Chat), теперь подключена и к локальным моделям (вкладка Local LLM). При отправке сообщения в локальную модель выполняется тот же retrieval pipeline: семантический поиск → keyword-дополнение → реранкер → инжекция контекста в промпт.
+
+#### Как работает
+
+```
+POST /chat/local
+        │
+        ▼
+RAG retrieval (тот же pipeline что в ChatAgent)
+        │
+        ├── semantic search (top_k=35)
+        ├── keyword supplement (фразы в кавычках «...» / "...")
+        ├── neighbor chunks (offset ±1, 2, 3 для keyword-совпадений)
+        └── reranker (pre_k=30, post_k=10, threshold=0.25, MMR)
+                │
+                ▼
+Build messages:
+  [system] RAG context block (чанки с метаданными)
+  [system] RAG instructions (упрощённые для локальных моделей)
+  [user/assistant] история диалога
+        │
+        ▼
+Ollama / llama.cpp → ответ с учётом контекста
+```
+
+#### Отличия от основного чата
+
+| Аспект | Chat (OpenRouter/DeepSeek) | Local LLM (Ollama/llama.cpp) |
+|---|---|---|
+| RAG-инструкции | Полный формат ANSWER/SOURCES/QUOTES | Упрощённые: «ответь по контексту, укажи источники» |
+| System prompt | Полный (память, инварианты, FSM, etc.) | Только RAG-контекст + краткая инструкция |
+| Отображение источников | ✅ (блок под ответом) | ✅ (такой же блок, scroll в localMessagesEl) |
+
+#### Изменённые файлы
+
+| Файл | Что изменилось |
+|---|---|
+| `main.py` | Импорт `rewrite_query`, `rerank_results` из `rag`; поля `rag_sources`, `rag_no_context` в `LocalChatResponse`; RAG retrieval pipeline в `POST /chat/local`; `_chat_ollama` / `_chat_llamacpp` принимают `messages` вместо `history` |
+| `static/app.js` | `appendRagSources()` — опциональный 4-й параметр `scrollEl`; `sendLocalMessage()` вызывает `appendRagSources()` с `localMessagesEl` |
+
+#### Архитектурные решения
+
+- **Единый retrieval pipeline** — код поиска и реранкинга идентичен основному чату, не дублирован (используются те же функции `rag_store.retrieve()`, `rerank_results()`, `rewrite_query()`)
+- **Упрощённые инструкции для локальных моделей** — небольшие модели (3B-7B) могут не справиться со сложным форматом ANSWER/SOURCES/QUOTES, поэтому получают краткую инструкцию
+- **Graceful degradation** — если RAG не инициализирован (нет Ollama для эмбеддингов), локальный чат работает без RAG как раньше
+- **Скролл в правильный контейнер** — `appendRagSources` принимает опциональный `scrollEl`, чтобы на вкладке Local LLM скроллился `localMessagesEl`, а не `messagesEl`
+
+---
+
 ### Предыдущие доработки
 
 | День | Фича |

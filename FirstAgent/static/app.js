@@ -317,7 +317,8 @@ function appendDiagrams(msgEl, diagramUrls) {
     messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
-function appendRagSources(msgEl, sources, noContext) {
+function appendRagSources(msgEl, sources, noContext, scrollEl) {
+    const scroll = scrollEl || messagesEl;
     // Show "no context found" note
     if (noContext) {
         const el = document.createElement('div');
@@ -326,7 +327,7 @@ function appendRagSources(msgEl, sources, noContext) {
             '<div class="rag-sources-none">All retrieved chunks were below the relevance threshold. ' +
             'Try rephrasing your question.</div>';
         msgEl.appendChild(el);
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        scroll.scrollTop = scroll.scrollHeight;
         return;
     }
 
@@ -372,7 +373,7 @@ function appendRagSources(msgEl, sources, noContext) {
     container.appendChild(header);
     container.appendChild(list);
     msgEl.appendChild(container);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+    scroll.scrollTop = scroll.scrollHeight;
 }
 
 function setLoading(loading) {
@@ -569,6 +570,7 @@ async function sendLocalMessage(text) {
         const data = await res.json();
         thinking.remove();
         const msgEl = appendLocalMessage('assistant', data.response);
+        appendRagSources(msgEl, data.rag_sources || [], data.rag_no_context, localMessagesEl);
         if (data.model_label || data.elapsed_ms) {
             const badge = document.createElement('span');
             badge.className = 'local-model-badge';

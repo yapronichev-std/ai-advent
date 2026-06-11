@@ -25,7 +25,7 @@ from mcp_search_client import MCPSearchClient
 from mcp_telegram_client import MCPTelegramClient
 from mcp_weather import MCPWeatherClient
 from profiles import UserProfileManager
-from rag import RAGStore, RAGRetriever, compare_strategies
+from rag import RAGStore, RAGRetriever, compare_strategies, rewrite_query, rerank_results
 
 load_dotenv()
 
@@ -341,6 +341,8 @@ class LocalChatResponse(BaseModel):
     model: str
     model_label: str
     elapsed_ms: int
+    rag_sources: list[dict] = []
+    rag_no_context: bool = False
 
 
 class LocalModelSelectRequest(BaseModel):
@@ -470,10 +472,81 @@ async def chat_local(request: MessageRequest):
     history = local_chat_history[user_id]
     history.append({"role": "user", "content": request.text})
 
+    # ── RAG retrieval (same pipeline as ChatAgent) ──────────────────────────
+    rag_sources: list[dict] = []
+    rag_no_context = False
+    if rag_store:
+        try:
+            search_query = rewrite_query(request.text, strategy="none")
+            raw_results = await rag_store.retrieve(search_query, top_k=35)
+
+            # Keyword supplement for quoted phrases
+            import re as _re
+            kw_terms: list[str] = []
+            for m in _re.finditer(r'[«"]([^»"]+)[»"]', request.text):
+                phrase = m.group(1).strip()
+                if len(phrase) >= 3:
+                    kw_terms.append(phrase)
+            if kw_terms:
+                kw_results = rag_store.retrieve_by_keywords(kw_terms, top_k=10)
+                if kw_results:
+                    extra_chunks: list[dict] = []
+                    for kr in kw_results:
+                        doc_id = kr.get("doc_id", "")
+                        ci = kr.get("chunk_index", -1)
+                        if doc_id and ci >= 0:
+                            for offset in (1, 2, 3, -1):
+                                neighbor = rag_store.get_chunk_by_doc_index(doc_id, ci + offset)
+                                if neighbor:
+                                    neighbor["score"] = kr["score"] - 0.02 * abs(offset)
+                                    extra_chunks.append(neighbor)
+                    seen = {r.get("chunk_id", "") for r in raw_results}
+                    pinned_kw: list[dict] = []
+                    for kr in kw_results + extra_chunks:
+                        cid = kr.get("chunk_id", "")
+                        if cid and cid not in seen:
+                            kr["_pinned"] = True
+                            pinned_kw.append(kr)
+                            seen.add(cid)
+                    raw_results = pinned_kw + raw_results
+                    raw_results.sort(key=lambda r: r["score"], reverse=True)
+
+            rerank = rerank_results(
+                raw_results, pre_k=30, post_k=10, threshold=0.25,
+                query=request.text,
+            )
+            final_results = rerank["results"]
+            pinned_ids = {r.get("chunk_id") for r in final_results}
+            for r in raw_results:
+                if r.get("_pinned") and r.get("chunk_id") not in pinned_ids:
+                    final_results.append(r)
+            rag_sources = final_results
+            if not rag_sources and rerank["before_count"] > 0:
+                rag_no_context = True
+        except Exception as exc:
+            logging.getLogger(__name__).warning("[local-rag] RAG retrieval failed: %s", exc)
+
+    # ── Build messages with RAG context ─────────────────────────────────────
+    messages: list[dict] = []
+    if rag_no_context and rag_store:
+        messages.append({"role": "system", "content": rag_store.build_no_context_instructions()})
+    elif rag_sources and rag_store:
+        rag_block = rag_store.build_context_block(rag_sources)
+        if rag_block:
+            messages.append({"role": "system", "content": rag_block})
+            # Simpler instruction for local models (they may struggle with complex formats)
+            messages.append({"role": "system", "content": (
+                "[RAG INSTRUCTIONS]\n"
+                "Answer the user's question using the retrieved context above. "
+                "Cite specific sources when possible. "
+                "If the context does not contain enough information, say so honestly."
+            )})
+    messages.extend(history)
+
     if provider == "ollama":
-        reply = await _chat_ollama(history, model_name)
+        reply = await _chat_ollama(messages, model_name)
     elif provider == "llamacpp":
-        reply = await _chat_llamacpp(history, model_name)
+        reply = await _chat_llamacpp(messages, model_name)
     else:
         raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
 
@@ -490,12 +563,14 @@ async def chat_local(request: MessageRequest):
         model=model_id,
         model_label=model_label,
         elapsed_ms=elapsed_ms,
+        rag_sources=rag_sources,
+        rag_no_context=rag_no_context,
     )
 
 
-async def _chat_ollama(history: list[dict], model_name: str) -> str:
+async def _chat_ollama(messages: list[dict], model_name: str) -> str:
     """Send messages to Ollama chat API."""
-    messages = [{"role": m["role"], "content": m["content"]} for m in history]
+    payload_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         for attempt in range(3):
@@ -504,7 +579,7 @@ async def _chat_ollama(history: list[dict], model_name: str) -> str:
                     f"{OLLAMA_URL}/api/chat",
                     json={
                         "model": model_name,
-                        "messages": messages,
+                        "messages": payload_messages,
                         "stream": False,
                     },
                 )
@@ -520,9 +595,9 @@ async def _chat_ollama(history: list[dict], model_name: str) -> str:
     raise RuntimeError("Ollama: max retries exceeded")
 
 
-async def _chat_llamacpp(history: list[dict], model_name: str) -> str:
+async def _chat_llamacpp(messages: list[dict], model_name: str) -> str:
     """Send messages to llama.cpp server via OpenAI-compatible API."""
-    messages = [{"role": m["role"], "content": m["content"]} for m in history]
+    payload_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         for attempt in range(3):
@@ -531,7 +606,7 @@ async def _chat_llamacpp(history: list[dict], model_name: str) -> str:
                     f"{LLAMACPP_SERVER_URL}/v1/chat/completions",
                     json={
                         "model": model_name,
-                        "messages": messages,
+                        "messages": payload_messages,
                     },
                 )
                 resp.raise_for_status()
