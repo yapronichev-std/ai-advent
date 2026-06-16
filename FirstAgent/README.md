@@ -1077,10 +1077,108 @@ elif detected in ("html", "mhtml"):
 
 ---
 
+### Day 30 — Вкладка Remote LLM: чат с удалённой моделью llama.cpp
+
+Вкладка для подключения к удалённому серверу llama.cpp по HTTP API (OpenAI-совместимый протокол). Позволяет использовать мощный удалённый сервер с GPU/CPU для инференса без запуска моделей локально.
+
+#### Сервер
+
+Развёрнут на удалённой машине:
+- **IP:** `195.58.153.66:8080`
+- **Модель:** Qwen3-4B-Q4_K_M (4B параметров, контекст 8192)
+- **CPU:** 4 vCPU Intel Xeon Gold 6240R (AVX512), 8 GB RAM
+
+#### Архитектура
+
+```
+Browser (Remote LLM tab)
+    │  fetch /chat/remote
+    ▼
+FirstAgent (FastAPI, main.py)
+    │  httpx → POST /v1/chat/completions
+    ▼
+llama-server (195.58.153.66:8080)
+    │  llama.cpp inference
+    ▼
+Qwen3-4B-Q4_K_M model
+```
+
+#### Новые файлы
+
+| Файл | Назначение |
+|---|---|
+| `llama-cpp-readme.md` | Инструкция по работе с llama.cpp на удалённом сервере |
+
+#### Изменённые файлы
+
+- **`main.py`** — добавлены эндпоинты:
+  - `GET /chat/remote/health` — проверка доступности сервера (latency, модель, параметры)
+  - `GET /chat/remote/models` — список моделей на удалённом сервере
+  - `POST /chat/remote` — отправка сообщения в чат (проксирует запрос к llama.cpp)
+  - `GET /chat/remote/history` — история чата
+  - `DELETE /chat/remote/history` — очистка истории
+- **`static/index.html`** — новая кнопка в навбаре `Remote LLM` и панель `tab-remote`:
+  - Индикатор статуса сервера (зелёный/красный/проверка)
+  - Диагностическая панель: модель, параметры, контекст, latency
+  - Поле ввода с авто-блокировкой при недоступности сервера
+- **`static/app.js`** — логика вкладки Remote LLM:
+  - `checkRemoteHealth()` — health-check при открытии вкладки
+  - Авто-мониторинг каждые 30 секунд
+  - Отправка сообщений с индикатором Thinking
+  - Отображение времени ответа и tok/s в футере сообщений
+  - Обработка ошибок соединения с кнопкой Retry
+  - Вспомогательная функция `escapeHtml()`
+- **`static/style.css`** — стили для Remote LLM:
+  - `.remote-server-badge` — адрес сервера
+  - `.remote-status-dot` / `.online` / `.offline` / `.checking` — анимированный индикатор
+  - `.remote-diag-bar` — панель диагностики
+  - `.msg-footer` / `.msg-time` — футер сообщений с метриками
+  - `.msg-error-tag` — тег ошибки
+  - Стили `#remote-input`, `#remote-send-btn` приведены к общему виду с остальными вкладками
+
+#### API Endpoints
+
+**Проверка здоровья:**
+```bash
+curl http://localhost:8000/chat/remote/health
+# → {"available": true, "latency_ms": 56, "models": [{"id": "Qwen3-4B-Q4_K_M.gguf", ...}]}
+```
+
+**Отправка сообщения:**
+```bash
+curl -X POST http://localhost:8000/chat/remote \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Привет!", "user_id": "default"}'
+# → {"response": "...", "model": "Qwen3-4B-Q4_K_M.gguf", "elapsed_ms": 20901, "server_available": true}
+```
+
+#### UX-фичи
+
+- 🔴🟢 Индикатор состояния сервера в реальном времени
+- Автоблокировка ввода при недоступности сервера
+- Кнопка Retry при обрыве соединения
+- Время ответа и скорость генерации (tok/s) под каждым сообщением
+- Общий стиль с остальными вкладками (Chat, Local LLM)
+
+#### Результаты тестирования
+
+| Тест | Результат |
+|---|---|
+| Доступ по сети | ✅ latency 56ms |
+| Чат-запрос | ✅ ответ получен за ~21 сек |
+| 5 последовательных запросов | ✅ все успешны, без ошибок |
+| Rate limiting | ✅ не обнаружен (llama.cpp без лимитов) |
+| Длинный контекст (~24K символов) | ⚠️ таймаут 120с (CPU-инференс) |
+
+---
+
 ### Предыдущие доработки
 
 | День | Фича |
 |---|---|
+| Day 30 | Вкладка Remote LLM: чат с удалённой моделью llama.cpp по HTTP API |
+| Day 29 | Поддержка HTML и MHTML в RAG-системе |
+| Day 28 | Оптимизация локальной модели: параметры, квантование, шаблоны промптов |
 | Day 27 | RAG-система подключена к вкладке Local LLM |
 | Day 26 | Вкладка Local LLM: чат с Ollama + llama.cpp |
 | Day 25 | Панель контрольных вопросов на вкладке RAG |

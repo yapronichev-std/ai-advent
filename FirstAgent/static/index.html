@@ -14,6 +14,7 @@
             <div class="main-nav-tabs">
                 <button class="main-nav-tab active" data-tab="chat">Chat</button>
                 <button class="main-nav-tab" data-tab="local">Local LLM</button>
+                <button class="main-nav-tab" data-tab="remote">Remote LLM</button>
                 <button class="main-nav-tab" data-tab="rag">RAG</button>
             </div>
         </nav>
@@ -265,6 +266,51 @@
                         rows="1"
                     ></textarea>
                     <button type="submit" id="local-send-btn">Send</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- ══ Remote LLM tab ══ -->
+        <div class="main-tab-panel" id="tab-remote">
+            <div class="local-chat-container">
+                <header class="chat-header">
+                    <h1>Remote LLM</h1>
+                    <div class="user-bar">
+                        <span class="user-label">Server</span>
+                        <span id="remote-server-url" class="remote-server-badge">195.58.153.66:8080</span>
+                        <span id="remote-status-dot" class="remote-status-dot" title="Checking..."></span>
+                    </div>
+                    <button id="remote-clear-btn" title="Clear history">Clear</button>
+                </header>
+
+                <!-- ── Server diagnostics bar ── -->
+                <div class="remote-diag-bar" id="remote-diag-bar">
+                    <span class="remote-diag-item">
+                        Model: <strong id="remote-model-name">—</strong>
+                    </span>
+                    <span class="remote-diag-item">
+                        Params: <strong id="remote-model-params">—</strong>
+                    </span>
+                    <span class="remote-diag-item">
+                        Context: <strong id="remote-model-ctx">—</strong>
+                    </span>
+                    <span class="remote-diag-item">
+                        Latency: <strong id="remote-latency">—</strong>
+                    </span>
+                </div>
+
+                <div class="messages" id="remote-messages">
+                    <div class="empty-state">Checking server connection...</div>
+                </div>
+
+                <form class="input-area" id="remote-chat-form">
+                    <textarea
+                        id="remote-input"
+                        placeholder="Type a message..."
+                        rows="1"
+                        disabled
+                    ></textarea>
+                    <button type="submit" id="remote-send-btn" disabled>Send</button>
                 </form>
             </div>
         </div>

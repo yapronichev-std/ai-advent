@@ -880,6 +880,139 @@ async def clear_local_history(user_id: str = Query(default="default")):
     return {"status": "ok", "user_id": user_id}
 
 
+# ── Remote Chat (llama.cpp server) ──────────────────────────────────────────
+
+REMOTE_LLAMACPP_URL = "http://195.58.153.66:8080"
+
+# user_id → list of messages
+remote_chat_history: dict[str, list[dict]] = {}
+
+
+class RemoteChatResponse(BaseModel):
+    response: str
+    history: list[dict]
+    model: str
+    elapsed_ms: int
+    server_available: bool
+    error: str = ""
+
+
+@app.get("/chat/remote/health")
+async def remote_health():
+    """Check if remote llama.cpp server is reachable and return diagnostics."""
+    result = {
+        "url": REMOTE_LLAMACPP_URL,
+        "available": False,
+        "models": [],
+        "error": "",
+        "latency_ms": 0,
+    }
+    try:
+        t0 = time.monotonic()
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{REMOTE_LLAMACPP_URL}/v1/models")
+            resp.raise_for_status()
+            data = resp.json()
+            result["latency_ms"] = round((time.monotonic() - t0) * 1000)
+            result["available"] = True
+            result["models"] = [
+                {
+                    "id": m.get("id", ""),
+                    "parameter_size": m.get("meta", {}).get("n_params", 0),
+                    "context_size": m.get("meta", {}).get("n_ctx", 0),
+                }
+                for m in data.get("data", [])
+            ]
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+@app.get("/chat/remote/models")
+async def remote_models():
+    """List models available on the remote server."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(f"{REMOTE_LLAMACPP_URL}/v1/models")
+        resp.raise_for_status()
+        return resp.json()
+
+
+@app.post("/chat/remote", response_model=RemoteChatResponse)
+async def chat_remote(request: MessageRequest):
+    """Send message to remote llama.cpp server."""
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    t0 = time.monotonic()
+    user_id = request.user_id
+
+    if user_id not in remote_chat_history:
+        remote_chat_history[user_id] = []
+
+    history = remote_chat_history[user_id]
+    history.append({"role": "user", "content": request.text})
+
+    # Build messages payload
+    messages = [{"role": m["role"], "content": m["content"]} for m in history]
+
+    server_available = True
+    error_msg = ""
+    reply = ""
+
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            resp = await client.post(
+                f"{REMOTE_LLAMACPP_URL}/v1/chat/completions",
+                json={
+                    "messages": messages,
+                    "max_tokens": 512,
+                    "temperature": 0.7,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            reply = data["choices"][0]["message"]["content"]
+    except Exception as e:
+        server_available = False
+        error_msg = str(e)
+        reply = f"[ERROR] Remote server unavailable: {e}"
+
+    if reply:
+        history.append({"role": "assistant", "content": reply})
+
+    elapsed_ms = round((time.monotonic() - t0) * 1000)
+
+    # Get the model name from the remote server
+    model_name = "remote-llamacpp"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{REMOTE_LLAMACPP_URL}/v1/models")
+            data = resp.json()
+            model_name = data.get("data", [{}])[0].get("id", "remote-llamacpp")
+    except Exception:
+        pass
+
+    return RemoteChatResponse(
+        response=reply,
+        history=history,
+        model=model_name,
+        elapsed_ms=elapsed_ms,
+        server_available=server_available,
+        error=error_msg,
+    )
+
+
+@app.get("/chat/remote/history")
+async def get_remote_history(user_id: str = Query(default="default")):
+    return {"history": remote_chat_history.get(user_id, []), "user_id": user_id}
+
+
+@app.delete("/chat/remote/history")
+async def clear_remote_history(user_id: str = Query(default="default")):
+    remote_chat_history.pop(user_id, None)
+    return {"status": "ok", "user_id": user_id}
+
+
 # ── Tokens ───────────────────────────────────────────────────────────────────
 
 @app.get("/tokens")

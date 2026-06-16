@@ -2,6 +2,13 @@
 let currentUserId = 'default';
 let currentModelId = '';
 
+// ── Utilities ────────────────────────────────────────────────────────────────
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
 // ── Main tab switching ───────────────────────────────────────────────────────
 document.querySelectorAll('.main-nav-tab').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -25,6 +32,13 @@ document.querySelectorAll('.main-nav-tab').forEach(btn => {
             if (currentLocalModelId) {
                 loadLocalModelDetail(currentLocalModelId);
             }
+        }
+        if (tab === 'remote') {
+            if (!remoteChecked) {
+                remoteChecked = true;
+                checkRemoteHealth();
+            }
+            loadRemoteHistory();
         }
     });
 });
@@ -1580,5 +1594,225 @@ const ragTabBtn = document.querySelector('.main-nav-tab[data-tab="rag"]');
 if (ragTabBtn) {
     ragTabBtn.addEventListener('click', () => {
         loadControlQuestions();
+    });
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ── Remote LLM tab ──────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+
+let remoteChecked = false;
+let remoteAvailable = false;
+
+const remoteMessages = document.getElementById('remote-messages');
+const remoteForm = document.getElementById('remote-chat-form');
+const remoteInput = document.getElementById('remote-input');
+const remoteSendBtn = document.getElementById('remote-send-btn');
+const remoteClearBtn = document.getElementById('remote-clear-btn');
+const remoteStatusDot = document.getElementById('remote-status-dot');
+const remoteDiagBar = document.getElementById('remote-diag-bar');
+const remoteModelName = document.getElementById('remote-model-name');
+const remoteModelParams = document.getElementById('remote-model-params');
+const remoteModelCtx = document.getElementById('remote-model-ctx');
+const remoteLatency = document.getElementById('remote-latency');
+
+// ── Health check ──────────────────────────────────────────────────────────
+
+async function checkRemoteHealth() {
+    remoteStatusDot.className = 'remote-status-dot checking';
+    remoteStatusDot.title = 'Checking server...';
+
+    try {
+        const resp = await fetch('/chat/remote/health');
+        const data = await resp.json();
+
+        remoteAvailable = data.available;
+
+        if (data.available) {
+            remoteStatusDot.className = 'remote-status-dot online';
+            remoteStatusDot.title = `Server online (${data.latency_ms}ms)`;
+            remoteLatency.textContent = `${data.latency_ms}ms`;
+            remoteDiagBar.classList.remove('offline');
+
+            // Show model info
+            if (data.models.length > 0) {
+                const m = data.models[0];
+                remoteModelName.textContent = m.id || '—';
+                const paramsB = (m.parameter_size / 1e9).toFixed(1);
+                remoteModelParams.textContent = m.parameter_size
+                    ? `${paramsB}B`
+                    : '—';
+                remoteModelCtx.textContent = m.context_size
+                    ? m.context_size.toLocaleString()
+                    : '—';
+            }
+
+            // Enable input
+            remoteInput.disabled = false;
+            remoteSendBtn.disabled = false;
+
+            // Update empty state
+            const emptyState = remoteMessages.querySelector('.empty-state');
+            if (emptyState) {
+                emptyState.textContent = 'Start a conversation with the remote model...';
+            }
+        } else {
+            setRemoteOffline(data.error || 'Server unreachable');
+        }
+    } catch (e) {
+        setRemoteOffline(`Health check failed: ${e.message}`);
+    }
+}
+
+function setRemoteOffline(reason) {
+    remoteAvailable = false;
+    remoteStatusDot.className = 'remote-status-dot offline';
+    remoteStatusDot.title = `Server offline: ${reason}`;
+    remoteDiagBar.classList.add('offline');
+    remoteInput.disabled = true;
+    remoteSendBtn.disabled = true;
+    remoteLatency.textContent = '—';
+    remoteModelName.textContent = '—';
+    remoteModelParams.textContent = '—';
+    remoteModelCtx.textContent = '—';
+
+    const emptyState = remoteMessages.querySelector('.empty-state');
+    if (emptyState) {
+        emptyState.innerHTML = `<span style="color:#ef4444">⚠ Server unavailable</span><br><small>${escapeHtml(reason)}</small><br><small><a href="#" onclick="remoteChecked=false;checkRemoteHealth();return false;">↻ Retry</a></small>`;
+    }
+}
+
+// ── Chat ──────────────────────────────────────────────────────────────────
+
+remoteForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const text = remoteInput.value.trim();
+    if (!text || !remoteAvailable) return;
+
+    remoteInput.value = '';
+    remoteSendBtn.disabled = true;
+    remoteInput.disabled = true;
+
+    appendRemoteMessage('user', text);
+    appendRemoteMessage('thinking', 'Thinking...');
+
+    const t0 = performance.now();
+    try {
+        const resp = await fetch(`/chat/remote?user_id=${encodeURIComponent(currentUserId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, user_id: currentUserId }),
+        });
+        const data = await resp.json();
+
+        // Replace the thinking placeholder
+        const thinkingEl = remoteMessages.querySelector('.message.thinking');
+        if (thinkingEl) {
+            thinkingEl.classList.remove('thinking');
+            thinkingEl.classList.add('assistant');
+            const elapsedSec = (data.elapsed_ms / 1000).toFixed(1);
+            const tps = data.response
+                ? (data.response.length / (data.elapsed_ms / 1000)).toFixed(1)
+                : 0;
+            let footerHtml = `<div class="msg-footer"><span class="msg-time">${elapsedSec}s · ~${tps} tok/s</span>`;
+            if (!data.server_available) {
+                footerHtml += ` <span class="msg-error-tag">OFFLINE</span>`;
+            }
+            footerHtml += '</div>';
+
+            const contentHtml = data.server_available
+                ? escapeHtml(data.response).replace(/\n/g, '<br>')
+                : `<span style="color:#ef4444">${escapeHtml(data.response)}</span>`;
+
+            thinkingEl.innerHTML = contentHtml + footerHtml;
+        }
+
+        // If server went down, update UI
+        if (!data.server_available) {
+            setRemoteOffline(data.error);
+        }
+    } catch (err) {
+        const thinkingEl = remoteMessages.querySelector('.message.thinking');
+        if (thinkingEl) {
+            thinkingEl.classList.remove('thinking');
+            thinkingEl.classList.add('error');
+            thinkingEl.innerHTML = `⚠ Request failed: ${escapeHtml(err.message)}`;
+        }
+        setRemoteOffline(err.message);
+    }
+
+    remoteSendBtn.disabled = !remoteAvailable;
+    remoteInput.disabled = !remoteAvailable;
+    if (remoteAvailable) remoteInput.focus();
+});
+
+// ── Clear ─────────────────────────────────────────────────────────────────
+
+remoteClearBtn.addEventListener('click', async () => {
+    try {
+        await fetch(`/chat/remote/history?user_id=${encodeURIComponent(currentUserId)}`, {
+            method: 'DELETE',
+        });
+    } catch (e) { /* ignore */ }
+    remoteMessages.innerHTML = '<div class="empty-state">Start a conversation with the remote model...</div>';
+});
+
+// ── History ───────────────────────────────────────────────────────────────
+
+async function loadRemoteHistory() {
+    try {
+        const resp = await fetch(`/chat/remote/history?user_id=${encodeURIComponent(currentUserId)}`);
+        const data = await resp.json();
+        if (data.history && data.history.length > 0) {
+            remoteMessages.innerHTML = '';
+            data.history.forEach(msg => {
+                appendRemoteMessage(msg.role, msg.content, false);
+            });
+        }
+    } catch (e) { /* ignore */ }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+function appendRemoteMessage(role, content, scroll = true) {
+    const emptyState = remoteMessages.querySelector('.empty-state');
+    if (emptyState) emptyState.remove();
+
+    const div = document.createElement('div');
+    div.className = `message ${role}`;
+    div.innerHTML = escapeHtml(content).replace(/\n/g, '<br>');
+    remoteMessages.appendChild(div);
+
+    if (scroll) {
+        remoteMessages.scrollTop = remoteMessages.scrollHeight;
+    }
+}
+
+// ── Periodic health check when tab is visible ──────────────────────────────
+
+let remoteHealthInterval = null;
+
+const remoteTabBtn = document.querySelector('.main-nav-tab[data-tab="remote"]');
+if (remoteTabBtn) {
+    remoteTabBtn.addEventListener('click', () => {
+        if (remoteHealthInterval) clearInterval(remoteHealthInterval);
+        // Check immediately if not checked yet or server is down
+        if (!remoteChecked || !remoteAvailable) {
+            checkRemoteHealth();
+        }
+        // Refresh health every 30 seconds while on this tab
+        remoteHealthInterval = setInterval(checkRemoteHealth, 30000);
+    });
+
+    // A global observer: if tab switches away, stop polling
+    document.querySelectorAll('.main-nav-tab').forEach(btn => {
+        if (btn.dataset.tab !== 'remote') {
+            btn.addEventListener('click', () => {
+                if (remoteHealthInterval) {
+                    clearInterval(remoteHealthInterval);
+                    remoteHealthInterval = null;
+                }
+            });
+        }
     });
 }
