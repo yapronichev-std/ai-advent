@@ -888,10 +888,209 @@ Ollama / llama.cpp → ответ с учётом контекста
 
 ---
 
+### Day 28 — Оптимизация локальной модели: параметры, квантование, шаблоны промптов
+
+Добавлены пользовательские настройки для локальных моделей во вкладке Local LLM: управление параметрами генерации (temperature, max tokens, context window), отображение уровня квантования и настраиваемые шаблоны системных промптов.
+
+#### Параметры генерации
+
+На вкладке Local LLM появилась сворачиваемая панель **Parameters** с шестью настройками:
+
+| Параметр | По умолчанию | Ollama поле | llama.cpp поле |
+|----------|-------------|-------------|----------------|
+| Temperature | 0.8 | `options.temperature` | `temperature` |
+| Max Tokens | 2048 | `options.num_predict` | `max_tokens` |
+| Top-P | 0.9 | `options.top_p` | `top_p` |
+| Top-K | 40 | `options.top_k` | *недоступно* |
+| Repeat Penalty | 1.1 | `options.repeat_penalty` | `frequency_penalty` + `presence_penalty` |
+| Context Window | 4096 | `options.num_ctx` | *требует перезапуска сервера* |
+
+Каждый параметр — связка слайдер + числовой ввод с двусторонней синхронизацией. Сохранение — debounce 500ms, per-user. Для разных провайдеров поля маппятся по-разному: Ollama использует `options.*`, llama.cpp — поля верхнего уровня (`temperature`, `max_tokens`, etc.).
+
+Параметры, недоступные для конкретного провайдера, автоматически скрываются или блокируются с примечанием.
+
+#### Квантование
+
+Рядом с селектором модели отображается цветной бейдж с уровнем квантования:
+
+| Бейдж | Уровни | Цвет |
+|-------|--------|------|
+| `Q4_K_M` | Q2, Q3, Q4 | Оранжевый (низкое) |
+| `Q5_K_M` | Q5 | Синий (среднее) |
+| `Q8_0` | Q6, Q8, F16 | Зелёный (высокое) |
+
+Информация о квантовании извлекается:
+- Для **GGUF-файлов** llama.cpp — парсинг имени файла (регулярка)
+- Для **Ollama-моделей** — через `POST /api/show`
+
+Результат кешируется на 60 секунд.
+
+#### Шаблоны системных промптов
+
+Панель **System Prompt** со сворачиваемым блоком:
+
+| Шаблон | Описание |
+|--------|----------|
+| **RAG-ассистент** | По умолчанию: полезный ассистент с поддержкой контекста документов |
+| **Код-ревью** | Экспертная проверка кода: баги, производительность, безопасность |
+| **Креативное письмо** | Выразительный и образный стиль |
+| **Лаконичный** | Краткие, прямые ответы без лишних слов |
+| **Свой шаблон** | Пользователь пишет системный промпт самостоятельно |
+
+Все шаблоны — на русском языке. При выборе предустановки textarea авто-заполняется. Выбор сохраняется per-user. Системный промпт вставляется **перед** RAG-контекстом в сообщения.
+
+#### Новые API endpoints
+
+| Метод | URL | Описание |
+|---|---|---|
+| `GET` | `/chat/local/params?user_id=...` | Текущие параметры генерации |
+| `POST` | `/chat/local/params?user_id=...` | Обновить параметры (частичное слияние) |
+| `GET` | `/chat/local/templates` | Список доступных шаблонов промптов |
+| `GET` | `/chat/local/prompt-template?user_id=...` | Текущий шаблон пользователя |
+| `POST` | `/chat/local/prompt-template?user_id=...` | Установить шаблон |
+| `GET` | `/chat/local/model-detail?model_id=...` | Информация о модели (квантование, размер, семейство) |
+
+#### Изменённые файлы
+
+| Файл | Что изменилось |
+|---|---|
+| `main.py` | Константы `DEFAULT_LOCAL_PARAMS`, `PROMPT_TEMPLATES`; словари `user_local_params`, `user_local_prompt_template`, `user_local_system_prompt`; Pydantic-модели `LocalParamsRequest`, `LocalPromptTemplateRequest`; 6 новых endpoints; обновление `_chat_ollama`/`_chat_llamacpp` для приёма `params`; сборка сообщений с системным промптом перед RAG-контекстом |
+| `static/index.html` | Панели `<details>` для Parameters и System Prompt; бейдж квантования `#local-quant-badge` |
+| `static/app.js` | `syncRangeAndNumber()`, `loadLocalParams()`, `saveLocalParams()`, `loadLocalPromptTemplate()`, `loadTemplateDefinitions()`, `saveLocalTemplate()`, `loadLocalModelDetail()`; обновление обработчика табов |
+| `static/style.css` | Стили `.param-row`, `.param-num`, `.quant-badge`, `.local-sysprompt-body`, адаптивность |
+
+#### Архитектурные решения
+
+- **Частичное слияние параметров** — можно обновить один параметр, не затрагивая остальные
+- **Debounce 500ms** — предотвращает лавину запросов при перетаскивании слайдера
+- **Разный маппинг для разных провайдеров** — `repeat_penalty` (Ollama) → `frequency_penalty` + `presence_penalty` (llama.cpp), `max_tokens` → `num_predict` (Ollama)
+- **Авто-скрытие неподдерживаемых параметров** — при выборе llama.cpp-модели Top-K скрывается, Context Window блокируется
+
+---
+
+### Day 29 — Поддержка HTML и MHTML в RAG-системе
+
+Реализована предобработка HTML и MHTML-документов перед индексацией в RAG: извлечение чистого текста, конвертация HTML-заголовков в Markdown-формат для structural-чанкера, извлечение метаданных (`<title>`), автоматическое определение формата.
+
+#### Проблема
+
+Раньше HTML-файлы индексировались как сырой текст — теги, скрипты и стили попадали в эмбеддинги, создавая шум и ухудшая качество поиска. MHTML (сохранённые веб-страницы) не поддерживались вообще.
+
+#### Решение: `html_parser.py`
+
+Новый модуль с классом `HtmlExtractor` (только stdlib: `html.parser` + `email`):
+
+| Метод | Описание |
+|---|---|
+| `detect_format(text)` | Автоопределение: `html`, `mhtml` или `text` |
+| `from_html(text)` | Извлечение чистого текста + метаданных из HTML |
+| `from_mhtml(text)` | Парсинг MIME-конверта → извлечение HTML → `from_html()` |
+
+#### Обработка HTML
+
+```
+Вход:  <html><head><title>Мой документ</title><script>alert(1)</script></head>
+       <body><h1>Введение</h1><p>Текст <b>жирный</b>.</p></body></html>
+
+Выход: # Введение
+       Текст жирный.
+       title: "Мой документ"
+```
+
+- **`<script>`, `<style>`, `<noscript>`** — удаляются полностью вместе с содержимым
+- **`<h1>...<h6>`** → `# ... ######` — конвертируются в Markdown-заголовки (structural-чанкер распознаёт их как секции)
+- **`<p>`, `<div>`, `<li>`** — добавляют переносы строк
+- **`<b>`, `<i>`, `<code>`** — inline-теги удаляются, текст сохраняется
+- **`<title>`** — извлекается как название документа
+
+#### Обработка MHTML
+
+MHTML (MIME HTML, `.mhtml`/`.mht`) — формат сохранения веб-страниц браузером. Представляет собой MIME-конверт `multipart/related`.
+
+1. Python-модуль `email` парсит MIME-структуру
+2. Находится часть с `Content-Type: text/html`
+3. Декодируется (quoted-printable / base64)
+4. Передаётся в `from_html()`
+
+#### Интеграция в pipeline
+
+Предобработка встроена в `RAGStore.add_document_stream()` и `add_document()`:
+
+```python
+if format == "auto":
+    detected = HtmlExtractor.detect_format(text)
+elif detected in ("html", "mhtml"):
+    result = HtmlExtractor.from_html(text)  # или from_mhtml
+    text = result["clean_text"]
+    if not source:
+        source = result["title"]
+```
+
+Формат можно указать вручную (`html`, `mhtml`, `text`) или оставить `auto` для автоопределения.
+
+#### API
+
+Поле `format` добавлено в `RAGDocumentRequest`:
+
+```json
+{
+  "text": "<html>...</html>",
+  "source": "page.html",
+  "strategy": "structural",
+  "format": "auto"
+}
+```
+
+Ответ `done` содержит определённый формат и извлечённый title:
+
+```json
+{
+  "type": "done",
+  "detected_format": "html",
+  "extracted_title": "Мой документ"
+}
+```
+
+#### UI
+
+- **Селектор формата** — рядом со стратегией чанкинга: `Auto`, `Plain Text`, `HTML`, `MHTML`
+- **Расширенный accept** — `.mhtml`, `.mht`, `.htm` добавлены в диалог выбора файла
+- **Статус загрузки** — показывает определённый формат: `✓ page.html (4 chunks, structural, html)`
+
+#### Изменённые файлы
+
+| Файл | Что изменилось |
+|---|---|
+| `html_parser.py` | **Новый файл**. Класс `HtmlExtractor`: `detect_format()`, `from_html()`, `from_mhtml()` |
+| `rag.py` | Импорт `HtmlExtractor`; параметр `format` в `add_document()` и `add_document_stream()`; предобработка перед `split_chunks()`; поля `detected_format`, `extracted_title` в ответе |
+| `main.py` | Поле `format` в `RAGDocumentRequest`; валидация и передача в `add_document_stream`/`add_document` |
+| `static/index.html` | Селектор `#rag-format-select`; `.mhtml,.mht` в `accept` |
+| `static/app.js` | Переменная `ragFormatSelect`; передача `format` при загрузке; отображение определённого формата в статусе |
+
+#### Архитектурные решения
+
+- **Только stdlib** — без внешних зависимостей: `html.parser` для HTML, `email` для MIME
+- **Прозрачная интеграция** — существующий код чанкинга и эмбеддингов не затронут
+- **Auto-definition** — формат определяется по сигнатурам в начале файла (`<!DOCTYPE html>`, `<html`, `MIME-Version:`)
+- **Структурный чанкинг + HTML** — конвертация `<h1>` в `#` позволяет structural-чанкеру корректно разбивать HTML-документы по логическим секциям
+- **Title как source** — если пользователь не указал `source`, берётся `<title>` из HTML
+
+---
+
 ### Предыдущие доработки
 
 | День | Фича |
 |---|---|
+| Day 27 | RAG-система подключена к вкладке Local LLM |
+| Day 26 | Вкладка Local LLM: чат с Ollama + llama.cpp |
+| Day 25 | Панель контрольных вопросов на вкладке RAG |
+| Day 24 | Структурированный вывод RAG и отображение источников в чате |
+| Day 23 | Выбор модели и прямое API DeepSeek |
+| Day 22 | RAG: реранкер, фильтр релевантности и query rewrite |
+| Day 21 | Расширенный RAG: метаданные + две стратегии чанкинга + compare + вкладка RAG |
+| Day 20 | RAG система на базе Ollama + ChromaDB |
+| Day 18 | MCP-сервер поиска и пайплайн «поиск → диаграмма → Telegram» |
+| Day 17 | MCP-сервер генерации UML-диаграмм (draw.io) |
 | Day 15 | Интеграция MCP погодного сервера (`mcp_weather.py`) |
 | Day 14 | Конечный автомат задач (Task FSM) с явными переходами состояний |
 | Day 13 | Инварианты (`invariants.py`) — правила поведения агента |

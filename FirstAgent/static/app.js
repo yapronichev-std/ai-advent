@@ -19,6 +19,12 @@ document.querySelectorAll('.main-nav-tab').forEach(btn => {
                 localHistoryLoaded = true;
                 loadLocalHistory();
             }
+            loadLocalParams();
+            loadLocalPromptTemplate();
+            loadTemplateDefinitions();
+            if (currentLocalModelId) {
+                loadLocalModelDetail(currentLocalModelId);
+            }
         }
     });
 });
@@ -468,6 +474,203 @@ let localHistoryLoaded  = false;
 let localModelsLoaded   = false;
 let currentLocalModelId = '';
 
+// ── Local parameters ────────────────────────────────────────────────────
+const paramTemperature    = document.getElementById('param-temperature');
+const paramTemperatureNum = document.getElementById('param-temperature-num');
+const paramMaxTokens      = document.getElementById('param-max-tokens');
+const paramMaxTokensNum   = document.getElementById('param-max-tokens-num');
+const paramTopP           = document.getElementById('param-top-p');
+const paramTopPNum    = document.getElementById('param-top-p-num');
+const paramTopK           = document.getElementById('param-top-k');
+const paramTopKNum    = document.getElementById('param-top-k-num');
+const paramRepeatPenalty  = document.getElementById('param-repeat-penalty');
+const paramRepeatPenaltyNum = document.getElementById('param-repeat-penalty-num');
+const paramNumCtx         = document.getElementById('param-num-ctx');
+const paramNumCtxNum  = document.getElementById('param-num-ctx-num');
+const paramRowTopK        = document.getElementById('param-row-top-k');
+const paramRowNumCtx      = document.getElementById('param-row-num-ctx');
+const paramNumCtxNote = document.getElementById('param-num-ctx-note');
+const paramStatus     = document.getElementById('param-status');
+
+// ── Local prompt template ───────────────────────────────────────────────
+const localTemplateSelect = document.getElementById('local-template-select');
+const localTemplateDesc   = document.getElementById('local-template-desc');
+const localSyspromptInput = document.getElementById('local-sysprompt-input');
+const localSyspromptSaveBtn = document.getElementById('local-sysprompt-save-btn');
+const localSyspromptStatus  = document.getElementById('local-sysprompt-status');
+
+// ── Quantization badge ──────────────────────────────────────────────────
+const localQuantBadge = document.getElementById('local-quant-badge');
+
+// ── Slider ↔ Number syncing ──────────────────────────────────────────────
+function syncRangeAndNumber(rangeEl, numEl) {
+    rangeEl.addEventListener('input', () => { numEl.value = rangeEl.value; });
+    numEl.addEventListener('input', () => {
+        let v = parseFloat(numEl.value);
+        const min = parseFloat(numEl.min);
+        const max = parseFloat(numEl.max);
+        if (!isNaN(v) && v >= min && v <= max) rangeEl.value = v;
+    });
+}
+
+// Wire each pair
+syncRangeAndNumber(paramTemperature, paramTemperatureNum);
+syncRangeAndNumber(paramMaxTokens, paramMaxTokensNum);
+syncRangeAndNumber(paramTopP, paramTopPNum);
+syncRangeAndNumber(paramTopK, paramTopKNum);
+syncRangeAndNumber(paramRepeatPenalty, paramRepeatPenaltyNum);
+syncRangeAndNumber(paramNumCtx, paramNumCtxNum);
+
+// ── Load / Save params ──────────────────────────────────────────────────
+async function loadLocalParams() {
+    try {
+        const res = await fetch(`/chat/local/params?user_id=${encodeURIComponent(currentUserId)}`);
+        if (!res.ok) return;
+        const { params } = await res.json();
+        paramTemperature.value = paramTemperatureNum.value = params.temperature ?? 0.8;
+        paramMaxTokens.value = paramMaxTokensNum.value = params.max_tokens ?? 2048;
+        paramTopP.value = paramTopPNum.value = params.top_p ?? 0.9;
+        paramTopK.value = paramTopKNum.value = params.top_k ?? 40;
+        paramRepeatPenalty.value = paramRepeatPenaltyNum.value = params.repeat_penalty ?? 1.1;
+        paramNumCtx.value = paramNumCtxNum.value = params.num_ctx ?? 4096;
+    } catch (_) {}
+}
+
+let paramSaveTimer = null;
+
+function scheduleParamSave() {
+    if (paramSaveTimer) clearTimeout(paramSaveTimer);
+    paramSaveTimer = setTimeout(saveLocalParams, 500);
+}
+
+async function saveLocalParams() {
+    const body = {
+        temperature: parseFloat(paramTemperature.value),
+        max_tokens: parseInt(paramMaxTokens.value),
+        top_p: parseFloat(paramTopP.value),
+        top_k: parseInt(paramTopK.value),
+        repeat_penalty: parseFloat(paramRepeatPenalty.value),
+        num_ctx: parseInt(paramNumCtx.value),
+    };
+    try {
+        const res = await fetch(`/chat/local/params?user_id=${encodeURIComponent(currentUserId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (res.ok) {
+            paramStatus.textContent = 'Saved';
+            setTimeout(() => { paramStatus.textContent = ''; }, 1500);
+        }
+    } catch (_) {}
+}
+
+// Wire each control to debounced save
+[paramTemperature, paramTemperatureNum,
+ paramMaxTokens, paramMaxTokensNum,
+ paramTopP, paramTopPNum,
+ paramTopK, paramTopKNum,
+ paramRepeatPenalty, paramRepeatPenaltyNum,
+ paramNumCtx, paramNumCtxNum
+].forEach(el => el.addEventListener('input', scheduleParamSave));
+
+// ── Prompt template ─────────────────────────────────────────────────────
+async function loadLocalPromptTemplate() {
+    try {
+        const res = await fetch(`/chat/local/prompt-template?user_id=${encodeURIComponent(currentUserId)}`);
+        if (!res.ok) return;
+        const { template_key, prompt, custom_prompt } = await res.json();
+        localTemplateSelect.value = template_key;
+        localSyspromptInput.value = prompt || custom_prompt || '';
+        updateTemplateDescription(template_key);
+    } catch (_) {}
+}
+
+async function loadTemplateDefinitions() {
+    try {
+        const res = await fetch('/chat/local/templates');
+        if (!res.ok) return;
+        const { templates } = await res.json();
+        window._localTemplateDefs = templates;
+        updateTemplateDescription(localTemplateSelect.value);
+    } catch (_) {}
+}
+
+function updateTemplateDescription(key) {
+    const defs = window._localTemplateDefs || {};
+    const t = defs[key];
+    localTemplateDesc.textContent = t ? t.description : '';
+}
+
+localTemplateSelect.addEventListener('change', async () => {
+    const key = localTemplateSelect.value;
+    const defs = window._localTemplateDefs || {};
+    const t = defs[key];
+    if (key === 'custom') {
+        // Keep existing text — user writes their own
+    } else if (t) {
+        localSyspromptInput.value = t.prompt;
+    }
+    updateTemplateDescription(key);
+    await saveLocalTemplate(key);
+});
+
+async function saveLocalTemplate(templateKey) {
+    const key = templateKey || localTemplateSelect.value;
+    const customPrompt = key === 'custom' ? localSyspromptInput.value : '';
+    try {
+        const res = await fetch(`/chat/local/prompt-template?user_id=${encodeURIComponent(currentUserId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ template_key: key, custom_prompt: customPrompt }),
+        });
+        if (res.ok) {
+            localSyspromptStatus.textContent = 'Saved';
+            setTimeout(() => { localSyspromptStatus.textContent = ''; }, 2000);
+        }
+    } catch (_) {}
+}
+
+localSyspromptSaveBtn.addEventListener('click', () => saveLocalTemplate(null));
+
+// ── Model detail / Quantization ─────────────────────────────────────────
+async function loadLocalModelDetail(modelId) {
+    if (!modelId) { localQuantBadge.hidden = true; return; }
+    try {
+        const res = await fetch(`/chat/local/model-detail?model_id=${encodeURIComponent(modelId)}`);
+        if (!res.ok) { localQuantBadge.hidden = true; return; }
+        const data = await res.json();
+        if (data.quantization) {
+            localQuantBadge.textContent = data.quantization;
+            localQuantBadge.hidden = false;
+            const q = data.quantization.toLowerCase();
+            localQuantBadge.className = 'quant-badge';
+            if (q.startsWith('q4') || q.startsWith('q3') || q.startsWith('q2')) {
+                localQuantBadge.classList.add('quant-low');
+            } else if (q.startsWith('q6') || q.startsWith('q8') || q.startsWith('f16') || q.startsWith('fp16') || q.startsWith('bf16')) {
+                localQuantBadge.classList.add('quant-high');
+            } else {
+                localQuantBadge.classList.add('quant-mid');
+            }
+        } else {
+            localQuantBadge.hidden = true;
+        }
+
+        // Provider-specific UI adjustments
+        if (data.provider === 'llamacpp') {
+            paramRowTopK.style.display = 'none';
+            paramNumCtx.disabled = true;
+            paramNumCtxNum.disabled = true;
+            paramNumCtxNote.textContent = '(requires server restart)';
+        } else {
+            paramRowTopK.style.display = '';
+            paramNumCtx.disabled = false;
+            paramNumCtxNum.disabled = false;
+            paramNumCtxNote.textContent = '';
+        }
+    } catch (_) { localQuantBadge.hidden = true; }
+}
+
 const LOCAL_EMPTY_STATE = 'Start a conversation with a local model...';
 
 async function loadLocalModels() {
@@ -499,6 +702,7 @@ async function loadLocalModels() {
         }
 
         localModelsLoaded = true;
+        loadLocalModelDetail(currentLocalModelId);
     } catch (_) {}
 }
 
@@ -512,6 +716,7 @@ localModelSelect.addEventListener('change', async () => {
         });
         if (res.ok) {
             currentLocalModelId = modelId;
+            loadLocalModelDetail(modelId);
         }
     } catch (_) {}
 });
@@ -899,6 +1104,7 @@ const ragUploadBtn       = document.querySelector('.rag-upload-btn');
 const ragUploadStatus    = document.getElementById('rag-upload-status');
 const ragUploadStatusIdle = document.getElementById('rag-upload-status-idle');
 const ragStrategySelect  = document.getElementById('rag-strategy-select');
+const ragFormatSelect    = document.getElementById('rag-format-select');
 const ragCompareBtn      = document.getElementById('rag-compare-btn');
 const ragCompareInput    = document.getElementById('rag-compare-input');
 const ragCompareResult   = document.getElementById('rag-compare-result');
@@ -974,6 +1180,7 @@ ragFileInput.addEventListener('change', async () => {
     if (!file) return;
     ragFileInput.value = '';
     const strategy = ragStrategySelect.value || 'fixed';
+    const format = ragFormatSelect.value || 'auto';
 
     setRagUploading(true);
     setRagProgress(0, 1, `Reading ${file.name}…`);
@@ -985,7 +1192,7 @@ ragFileInput.addEventListener('change', async () => {
         const res = await fetch('/rag/documents/stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text, source: file.name, strategy }),
+            body: JSON.stringify({ text, source: file.name, strategy, format }),
         });
 
         if (!res.ok) {
@@ -997,6 +1204,7 @@ ragFileInput.addEventListener('change', async () => {
         const decoder = new TextDecoder();
         let buffer = '';
         let finalChunks = 0;
+        let finalFormat = '';
 
         while (true) {
             const { done, value } = await reader.read();
@@ -1018,6 +1226,7 @@ ragFileInput.addEventListener('change', async () => {
                     setRagProgress(event.current, event.total, event.section);
                 } else if (event.type === 'done') {
                     finalChunks = event.chunks;
+                    finalFormat = event.detected_format || '';
                     setRagProgress(event.chunks, event.chunks, 'done');
                 } else if (event.type === 'error') {
                     throw new Error(event.message);
@@ -1026,7 +1235,8 @@ ragFileInput.addEventListener('change', async () => {
         }
 
         setRagUploading(false);
-        setRagIdleStatus(`✓ ${file.name} (${finalChunks} chunks, ${strategy})`);
+        const fmtLabel = finalFormat && finalFormat !== 'text' ? `, ${finalFormat}` : '';
+        setRagIdleStatus(`✓ ${file.name} (${finalChunks} chunks, ${strategy}${fmtLabel})`);
         await loadRagDocuments();
     } catch (err) {
         setRagUploading(false);

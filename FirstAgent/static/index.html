@@ -185,12 +185,77 @@
                     <div class="user-bar">
                         <span class="user-label">Model</span>
                         <select id="local-model-select"></select>
+                        <span id="local-quant-badge" class="quant-badge" hidden></span>
                     </div>
                     <button id="local-clear-btn" title="Clear history">Clear</button>
                 </header>
 
+                <!-- ── Collapsible Parameters panel ── -->
+                <details class="local-params-details" id="local-params-details">
+                    <summary class="local-params-toggle">Parameters</summary>
+                    <div class="local-params-body">
+                        <div class="param-row">
+                            <label class="param-label">Temperature</label>
+                            <input type="range" id="param-temperature" min="0" max="2" step="0.05" value="0.8">
+                            <input type="number" id="param-temperature-num" min="0" max="2" step="0.05" value="0.8" class="param-num">
+                        </div>
+                        <div class="param-row">
+                            <label class="param-label">Max Tokens</label>
+                            <input type="range" id="param-max-tokens" min="64" max="8192" step="64" value="2048">
+                            <input type="number" id="param-max-tokens-num" min="64" max="8192" step="64" value="2048" class="param-num">
+                        </div>
+                        <div class="param-row">
+                            <label class="param-label">Top-P</label>
+                            <input type="range" id="param-top-p" min="0" max="1" step="0.05" value="0.9">
+                            <input type="number" id="param-top-p-num" min="0" max="1" step="0.05" value="0.9" class="param-num">
+                        </div>
+                        <div class="param-row" id="param-row-top-k">
+                            <label class="param-label">Top-K</label>
+                            <input type="range" id="param-top-k" min="1" max="100" step="1" value="40">
+                            <input type="number" id="param-top-k-num" min="1" max="100" step="1" value="40" class="param-num">
+                        </div>
+                        <div class="param-row">
+                            <label class="param-label">Repeat Penalty</label>
+                            <input type="range" id="param-repeat-penalty" min="1" max="2" step="0.05" value="1.1">
+                            <input type="number" id="param-repeat-penalty-num" min="1" max="2" step="0.05" value="1.1" class="param-num">
+                        </div>
+                        <div class="param-row" id="param-row-num-ctx">
+                            <label class="param-label">Context Window
+                                <span class="param-note" id="param-num-ctx-note"></span>
+                            </label>
+                            <input type="range" id="param-num-ctx" min="1024" max="32768" step="1024" value="4096">
+                            <input type="number" id="param-num-ctx-num" min="1024" max="32768" step="1024" value="4096" class="param-num">
+                        </div>
+                        <div class="param-save-row">
+                            <span class="param-status" id="param-status"></span>
+                        </div>
+                    </div>
+                </details>
+
+                <!-- ── Collapsible System Prompt panel ── -->
+                <details class="local-sysprompt-details" id="local-sysprompt-details">
+                    <summary class="local-sysprompt-toggle">System Prompt</summary>
+                    <div class="local-sysprompt-body">
+                        <div class="local-template-row">
+                            <select id="local-template-select">
+                                <option value="rag_assistant">RAG-ассистент</option>
+                                <option value="code_review">Код-ревью</option>
+                                <option value="creative_writing">Креативное письмо</option>
+                                <option value="concise">Лаконичный</option>
+                                <option value="custom">Свой шаблон</option>
+                            </select>
+                            <span class="local-template-desc" id="local-template-desc"></span>
+                        </div>
+                        <textarea id="local-sysprompt-input" rows="4" placeholder="Введите системный промпт..." spellcheck="false"></textarea>
+                        <div class="local-sysprompt-actions">
+                            <span class="local-sysprompt-status" id="local-sysprompt-status"></span>
+                            <button id="local-sysprompt-save-btn" type="button">Save</button>
+                        </div>
+                    </div>
+                </details>
+
                 <div class="messages" id="local-messages">
-                    <div class="empty-state">Start a conversation with local Llama 3.2 3B...</div>
+                    <div class="empty-state">Start a conversation with a local model...</div>
                 </div>
 
                 <form class="input-area" id="local-chat-form">
@@ -217,15 +282,21 @@
                     <div class="rag-upload-row">
                         <label class="rag-upload-btn" for="rag-file-input">+ Upload file</label>
                         <input type="file" id="rag-file-input"
-                               accept=".txt,.md,.rst,.csv,.json,.py,.js,.ts,.html,.xml,.yaml,.yml"
+                               accept=".txt,.md,.rst,.csv,.json,.py,.js,.ts,.html,.htm,.mhtml,.mht,.xml,.yaml,.yml"
                                hidden>
                         <select id="rag-strategy-select" title="Chunking strategy">
                             <option value="fixed">Fixed</option>
                             <option value="structural">Structural</option>
                         </select>
+                        <select id="rag-format-select" title="Document format">
+                            <option value="auto">Auto</option>
+                            <option value="text">Plain Text</option>
+                            <option value="html">HTML</option>
+                            <option value="mhtml">MHTML</option>
+                        </select>
                         <button id="rag-compare-btn" title="Compare chunking strategies">⇄ Compare</button>
                         <input type="file" id="rag-compare-input"
-                               accept=".txt,.md,.rst,.csv,.json,.py,.js,.ts,.html,.xml,.yaml,.yml"
+                               accept=".txt,.md,.rst,.csv,.json,.py,.js,.ts,.html,.htm,.mhtml,.mht,.xml,.yaml,.yml"
                                hidden>
                     </div>
 

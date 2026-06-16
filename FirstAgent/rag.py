@@ -7,6 +7,8 @@ from typing import Literal
 import httpx
 import chromadb
 
+from html_parser import HtmlExtractor
+
 logger = logging.getLogger(__name__)
 
 # ── Stop words for query rewriting ──────────────────────────────────────────
@@ -266,21 +268,46 @@ class RAGStore:
         logger.info("[RAG] initialized, %d chunks in collection", self._collection.count())
 
     async def add_document_stream(
-        self, text: str, source: str = "", strategy: ChunkStrategy = "fixed"
+        self, text: str, source: str = "", strategy: ChunkStrategy = "fixed",
+        format: str = "auto",
     ):
         """Async generator that yields progress events while embedding each chunk.
 
         Event shapes:
           {"type": "start",    "doc_id": str, "total": int}
           {"type": "progress", "current": int, "total": int, "section": str}
-          {"type": "done",     "doc_id": str, "chunks": int, "source": str, "strategy": str}
+          {"type": "done",     "doc_id": str, "chunks": int, "source": str, "strategy": str,
+                               "detected_format": str, "extracted_title": str | None}
           {"type": "error",    "message": str}
         """
+        # ── Preprocess HTML / MHTML ──────────────────────────────────────
+        detected_format = "text"
+        extracted_title: str | None = None
+        if format == "auto":
+            detected_format = HtmlExtractor.detect_format(text)
+        else:
+            detected_format = format
+
+        if detected_format == "mhtml":
+            result = HtmlExtractor.from_mhtml(text)
+            text = result["clean_text"]
+            extracted_title = result.get("title") or None
+            if not source and extracted_title:
+                source = extracted_title
+        elif detected_format == "html":
+            result = HtmlExtractor.from_html(text)
+            text = result["clean_text"]
+            extracted_title = result.get("title") or None
+            if not source and extracted_title:
+                source = extracted_title
+
         doc_id = "doc_" + uuid.uuid4().hex[:8]
         chunks = split_chunks(text, source=source, strategy=strategy)
 
         if not chunks:
-            yield {"type": "done", "doc_id": doc_id, "chunks": 0, "source": source, "strategy": strategy}
+            yield {"type": "done", "doc_id": doc_id, "chunks": 0, "source": source,
+                   "strategy": strategy, "detected_format": detected_format,
+                   "extracted_title": extracted_title}
             return
 
         yield {"type": "start", "doc_id": doc_id, "total": len(chunks)}
@@ -312,18 +339,46 @@ class RAGStore:
 
         self._collection.add(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
         logger.info(
-            "[RAG] added document %s (%d chunks, source=%r, strategy=%s)",
-            doc_id, len(chunks), source, strategy,
+            "[RAG] added document %s (%d chunks, source=%r, strategy=%s, format=%s)",
+            doc_id, len(chunks), source, strategy, detected_format,
         )
-        yield {"type": "done", "doc_id": doc_id, "chunks": len(chunks), "source": source, "strategy": strategy}
+        yield {
+            "type": "done", "doc_id": doc_id, "chunks": len(chunks),
+            "source": source, "strategy": strategy,
+            "detected_format": detected_format,
+            "extracted_title": extracted_title,
+        }
 
     async def add_document(
-        self, text: str, source: str = "", strategy: ChunkStrategy = "fixed"
+        self, text: str, source: str = "", strategy: ChunkStrategy = "fixed",
+        format: str = "auto",
     ) -> dict:
+        # ── Preprocess HTML / MHTML ──────────────────────────────────────
+        detected_format = "text"
+        extracted_title: str | None = None
+        if format == "auto":
+            detected_format = HtmlExtractor.detect_format(text)
+        else:
+            detected_format = format
+
+        if detected_format == "mhtml":
+            result = HtmlExtractor.from_mhtml(text)
+            text = result["clean_text"]
+            extracted_title = result.get("title") or None
+            if not source and extracted_title:
+                source = extracted_title
+        elif detected_format == "html":
+            result = HtmlExtractor.from_html(text)
+            text = result["clean_text"]
+            extracted_title = result.get("title") or None
+            if not source and extracted_title:
+                source = extracted_title
+
         doc_id = "doc_" + uuid.uuid4().hex[:8]
         chunks = split_chunks(text, source=source, strategy=strategy)
         if not chunks:
-            return {"doc_id": doc_id, "chunks": 0, "source": source, "strategy": strategy}
+            return {"doc_id": doc_id, "chunks": 0, "source": source, "strategy": strategy,
+                    "detected_format": detected_format, "extracted_title": extracted_title}
 
         ids, embeddings, documents, metadatas = [], [], [], []
         for chunk in chunks:
@@ -349,10 +404,12 @@ class RAGStore:
             ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas
         )
         logger.info(
-            "[RAG] added document %s (%d chunks, source=%r, strategy=%s)",
-            doc_id, len(chunks), source, strategy,
+            "[RAG] added document %s (%d chunks, source=%r, strategy=%s, format=%s)",
+            doc_id, len(chunks), source, strategy, detected_format,
         )
-        return {"doc_id": doc_id, "chunks": len(chunks), "source": source, "strategy": strategy}
+        return {"doc_id": doc_id, "chunks": len(chunks), "source": source,
+                "strategy": strategy, "detected_format": detected_format,
+                "extracted_title": extracted_title}
 
     async def retrieve(self, query: str, top_k: int = 5) -> list[dict]:
         total = self._collection.count()

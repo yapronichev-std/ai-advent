@@ -334,6 +334,68 @@ local_chat_history: dict[str, list[dict]] = {}
 # user_id → model_id (e.g. "ollama:llama3.2:3b" or "llamacpp:qwen2.5-1.5b-instruct-q4_k_m")
 user_local_models: dict[str, str] = {}
 
+# ── Default local params ────────────────────────────────────────────────
+DEFAULT_LOCAL_PARAMS = {
+    "temperature": 0.8,
+    "max_tokens": 2048,
+    "top_p": 0.9,
+    "top_k": 40,
+    "repeat_penalty": 1.1,
+    "num_ctx": 4096,
+}
+
+# user_id → dict of params
+user_local_params: dict[str, dict] = {}
+
+# ── Prompt Templates ────────────────────────────────────────────────────
+PROMPT_TEMPLATES = {
+    "rag_assistant": {
+        "label": "RAG-ассистент",
+        "description": "По умолчанию: полезный ассистент с поддержкой контекста документов",
+        "prompt": (
+            "Ты — полезный AI-ассистент. Отвечай на вопросы пользователя, опираясь на "
+            "предоставленный контекст, если он есть. Будь ясным, кратким и указывай источники, "
+            "когда используешь найденную информацию. Если не знаешь ответа — скажи честно."
+        ),
+    },
+    "code_review": {
+        "label": "Код-ревью",
+        "description": "Экспертная проверка кода: баги, производительность, безопасность",
+        "prompt": (
+            "Ты — эксперт по код-ревью. Анализируй код на наличие багов, проблем с производительностью, "
+            "уязвимостей безопасности и стилистических ошибок. Предлагай конкретные улучшения. "
+            "Будь тщательным, но конструктивным в своих замечаниях."
+        ),
+    },
+    "creative_writing": {
+        "label": "Креативное письмо",
+        "description": "Выразительный и образный стиль, помощь с историями и текстами",
+        "prompt": (
+            "Ты — ассистент по креативному письму. Помогай с рассказами, стихами, диалогами "
+            "и другим творческим контентом. Будь изобретательным и описательным. Используй "
+            "богатый язык и разнообразные структуры предложений."
+        ),
+    },
+    "concise": {
+        "label": "Лаконичный",
+        "description": "Краткие, прямые ответы без лишних слов",
+        "prompt": (
+            "Ты — лаконичный ассистент. Отвечай максимально кратко, но по делу. "
+            "Используй маркированные списки, когда это уместно. Избегай воды и лишних пояснений."
+        ),
+    },
+    "custom": {
+        "label": "Свой шаблон",
+        "description": "Пользователь пишет системный промпт самостоятельно",
+        "prompt": "",
+    },
+}
+
+# user_id → template key (e.g. "rag_assistant")
+user_local_prompt_template: dict[str, str] = {}
+# user_id → custom system prompt text (used when template is "custom")
+user_local_system_prompt: dict[str, str] = {}
+
 
 class LocalChatResponse(BaseModel):
     response: str
@@ -347,6 +409,36 @@ class LocalChatResponse(BaseModel):
 
 class LocalModelSelectRequest(BaseModel):
     model_id: str
+
+
+class LocalParamsRequest(BaseModel):
+    temperature: float | None = None
+    max_tokens: int | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    repeat_penalty: float | None = None
+    num_ctx: int | None = None
+
+
+class LocalPromptTemplateRequest(BaseModel):
+    template_key: str
+    custom_prompt: str = ""
+
+
+# ── Quantization helpers ──────────────────────────────────────────────
+
+import re as _re
+
+_QUANT_PATTERN = _re.compile(
+    r'(q[2-8]_[0-9a-z_]+|f16|fp16|bf16)',
+    _re.IGNORECASE,
+)
+
+
+def _parse_quantization(filename: str) -> str | None:
+    """Extract quantization level from a GGUF filename (e.g. 'q4_k_m' from 'model-q4_k_m.gguf')."""
+    match = _QUANT_PATTERN.search(filename.lower())
+    return match.group(0).upper() if match else None
 
 
 async def _discover_ollama_models() -> list[dict]:
@@ -388,12 +480,19 @@ async def _discover_llamacpp_models() -> list[dict]:
             continue
         # Derive a short label from the filename
         label = name.removesuffix(".gguf")
+        base_name = (
+            name.removesuffix(".gguf").rsplit("-", 1)[0]
+            if "-" in name.removesuffix(".gguf")
+            else name.removesuffix(".gguf")
+        )
         models.append({
             "id": f"llamacpp:{name}",
             "label": f"{label} (llama.cpp)",
             "provider": "llamacpp",
             "model_name": name,
             "file_path": str(f),
+            "quantization": _parse_quantization(name),
+            "base_name": base_name,
         })
     return models
 
@@ -440,6 +539,107 @@ async def get_local_model(user_id: str = Query(default="default")):
 async def set_local_model(request: LocalModelSelectRequest, user_id: str = Query(default="default")):
     user_local_models[user_id] = request.model_id
     return {"model": request.model_id, "user_id": user_id}
+
+
+# ── Local params ─────────────────────────────────────────────────────
+
+@app.get("/chat/local/params")
+async def get_local_params(user_id: str = Query(default="default")):
+    params = user_local_params.get(user_id, dict(DEFAULT_LOCAL_PARAMS))
+    return {"params": params, "user_id": user_id}
+
+
+@app.post("/chat/local/params")
+async def set_local_params(request: LocalParamsRequest, user_id: str = Query(default="default")):
+    current = user_local_params.get(user_id, dict(DEFAULT_LOCAL_PARAMS))
+    for field in ("temperature", "max_tokens", "top_p", "top_k", "repeat_penalty", "num_ctx"):
+        val = getattr(request, field, None)
+        if val is not None:
+            current[field] = val
+    user_local_params[user_id] = current
+    return {"params": current, "user_id": user_id}
+
+
+# ── Local prompt templates ───────────────────────────────────────────
+
+@app.get("/chat/local/templates")
+async def list_local_templates():
+    """Return available prompt template presets."""
+    templates = {
+        key: {"label": t["label"], "description": t["description"], "prompt": t["prompt"]}
+        for key, t in PROMPT_TEMPLATES.items()
+    }
+    return {"templates": templates, "default": "rag_assistant"}
+
+
+@app.get("/chat/local/prompt-template")
+async def get_local_prompt_template(user_id: str = Query(default="default")):
+    template_key = user_local_prompt_template.get(user_id, "rag_assistant")
+    custom_prompt = user_local_system_prompt.get(user_id, "")
+    template_def = PROMPT_TEMPLATES.get(template_key, PROMPT_TEMPLATES["rag_assistant"])
+    return {
+        "template_key": template_key,
+        "prompt": template_def["prompt"] if template_key != "custom" else custom_prompt,
+        "custom_prompt": custom_prompt,
+        "user_id": user_id,
+    }
+
+
+@app.post("/chat/local/prompt-template")
+async def set_local_prompt_template(request: LocalPromptTemplateRequest, user_id: str = Query(default="default")):
+    if request.template_key not in PROMPT_TEMPLATES:
+        raise HTTPException(status_code=400, detail=f"Unknown template: {request.template_key}")
+    user_local_prompt_template[user_id] = request.template_key
+    if request.template_key == "custom":
+        user_local_system_prompt[user_id] = request.custom_prompt
+    return {"template_key": request.template_key, "user_id": user_id}
+
+
+# ── Model detail (quantization info) ──────────────────────────────────
+
+# Simple cache for Ollama model details (model_name → detail dict, 60s TTL)
+_model_detail_cache: dict[str, tuple[dict, float]] = {}
+
+
+@app.get("/chat/local/model-detail")
+async def get_local_model_detail(model_id: str = Query(...)):
+    """Return detailed info about a local model, including quantization level."""
+    import time as _time
+    if model_id.startswith("ollama:"):
+        name = model_id[len("ollama:"):]
+        # Check cache
+        cached = _model_detail_cache.get(name)
+        if cached and _time.monotonic() - cached[1] < 60:
+            return cached[0]
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.post(f"{OLLAMA_URL}/api/show", json={"name": name})
+                if resp.status_code == 200:
+                    data = resp.json()
+                    details = data.get("details", {})
+                    result = {
+                        "provider": "ollama",
+                        "model_name": name,
+                        "quantization": details.get("quantization_level") or None,
+                        "parameter_size": details.get("parameter_size", ""),
+                        "family": details.get("family", ""),
+                    }
+                    _model_detail_cache[name] = (result, _time.monotonic())
+                    return result
+        except Exception:
+            pass
+        return {"provider": "ollama", "model_name": name, "quantization": None}
+    elif model_id.startswith("llamacpp:"):
+        name = model_id[len("llamacpp:"):]
+        quant = _parse_quantization(name)
+        return {
+            "provider": "llamacpp",
+            "model_name": name,
+            "quantization": quant or None,
+            "parameter_size": "",
+            "family": "",
+        }
+    raise HTTPException(status_code=400, detail=f"Unknown model: {model_id}")
 
 
 def _resolve_local_model(user_id: str) -> tuple[str, str, str]:
@@ -526,8 +726,19 @@ async def chat_local(request: MessageRequest):
         except Exception as exc:
             logging.getLogger(__name__).warning("[local-rag] RAG retrieval failed: %s", exc)
 
-    # ── Build messages with RAG context ─────────────────────────────────────
+    # ── Build messages: system prompt → RAG context → history ──────────
     messages: list[dict] = []
+
+    # 1. User's system prompt (from template or custom)
+    template_key = user_local_prompt_template.get(request.user_id, "rag_assistant")
+    template_def = PROMPT_TEMPLATES.get(template_key, PROMPT_TEMPLATES["rag_assistant"])
+    user_system_prompt = template_def["prompt"]
+    if template_key == "custom":
+        user_system_prompt = user_local_system_prompt.get(request.user_id, "")
+    if user_system_prompt:
+        messages.append({"role": "system", "content": user_system_prompt})
+
+    # 2. RAG context
     if rag_no_context and rag_store:
         messages.append({"role": "system", "content": rag_store.build_no_context_instructions()})
     elif rag_sources and rag_store:
@@ -541,12 +752,17 @@ async def chat_local(request: MessageRequest):
                 "Cite specific sources when possible. "
                 "If the context does not contain enough information, say so honestly."
             )})
+
+    # 3. History
     messages.extend(history)
 
+    # ── Apply user-specified params ──────────────────────────────────────
+    params = user_local_params.get(request.user_id, dict(DEFAULT_LOCAL_PARAMS))
+
     if provider == "ollama":
-        reply = await _chat_ollama(messages, model_name)
+        reply = await _chat_ollama(messages, model_name, params)
     elif provider == "llamacpp":
-        reply = await _chat_llamacpp(messages, model_name)
+        reply = await _chat_llamacpp(messages, model_name, params)
     else:
         raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
 
@@ -568,20 +784,37 @@ async def chat_local(request: MessageRequest):
     )
 
 
-async def _chat_ollama(messages: list[dict], model_name: str) -> str:
-    """Send messages to Ollama chat API."""
+async def _chat_ollama(messages: list[dict], model_name: str, params: dict | None = None) -> str:
+    """Send messages to Ollama chat API with optional generation parameters."""
     payload_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+    body: dict = {
+        "model": model_name,
+        "messages": payload_messages,
+        "stream": False,
+    }
+    if params:
+        options: dict = {}
+        if params.get("temperature") is not None:
+            options["temperature"] = params["temperature"]
+        if params.get("max_tokens") is not None:
+            options["num_predict"] = params["max_tokens"]
+        if params.get("top_p") is not None:
+            options["top_p"] = params["top_p"]
+        if params.get("top_k") is not None:
+            options["top_k"] = params["top_k"]
+        if params.get("repeat_penalty") is not None:
+            options["repeat_penalty"] = params["repeat_penalty"]
+        if params.get("num_ctx") is not None:
+            options["num_ctx"] = params["num_ctx"]
+        if options:
+            body["options"] = options
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         for attempt in range(3):
             try:
                 resp = await client.post(
                     f"{OLLAMA_URL}/api/chat",
-                    json={
-                        "model": model_name,
-                        "messages": payload_messages,
-                        "stream": False,
-                    },
+                    json=body,
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -595,19 +828,34 @@ async def _chat_ollama(messages: list[dict], model_name: str) -> str:
     raise RuntimeError("Ollama: max retries exceeded")
 
 
-async def _chat_llamacpp(messages: list[dict], model_name: str) -> str:
-    """Send messages to llama.cpp server via OpenAI-compatible API."""
+async def _chat_llamacpp(messages: list[dict], model_name: str, params: dict | None = None) -> str:
+    """Send messages to llama.cpp server via OpenAI-compatible API with optional parameters."""
     payload_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+    body: dict = {
+        "model": model_name,
+        "messages": payload_messages,
+    }
+    if params:
+        if params.get("temperature") is not None:
+            body["temperature"] = params["temperature"]
+        if params.get("max_tokens") is not None:
+            body["max_tokens"] = params["max_tokens"]
+        if params.get("top_p") is not None:
+            body["top_p"] = params["top_p"]
+        # top_k is not in the standard OpenAI-compatible API — skip
+        if params.get("repeat_penalty") is not None:
+            # Map repeat_penalty (1.0=none to 2.0=max) to frequency_penalty/presence_penalty
+            rp = params["repeat_penalty"]
+            body["frequency_penalty"] = max(0.0, min(2.0, (rp - 1.0) * 2.0))
+            body["presence_penalty"] = max(0.0, min(2.0, (rp - 1.0) * 1.0))
+        # num_ctx cannot be set via API for llama.cpp — skip
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         for attempt in range(3):
             try:
                 resp = await client.post(
                     f"{LLAMACPP_SERVER_URL}/v1/chat/completions",
-                    json={
-                        "model": model_name,
-                        "messages": payload_messages,
-                    },
+                    json=body,
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -868,6 +1116,7 @@ class RAGDocumentRequest(BaseModel):
     text: str
     source: str = ""
     strategy: str = "fixed"
+    format: str = "auto"  # "auto" | "text" | "html" | "mhtml"
 
 
 class RAGCompareRequest(BaseModel):
@@ -883,10 +1132,11 @@ async def add_rag_document_stream(request: RAGDocumentRequest):
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Document text cannot be empty")
     strategy = request.strategy if request.strategy in ("fixed", "structural") else "fixed"
+    fmt = request.format if request.format in ("auto", "text", "html", "mhtml") else "auto"
 
     async def event_gen():
         async for event in rag_store.add_document_stream(
-            request.text, source=request.source, strategy=strategy
+            request.text, source=request.source, strategy=strategy, format=fmt
         ):
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
@@ -900,7 +1150,9 @@ async def add_rag_document(request: RAGDocumentRequest):
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Document text cannot be empty")
     strategy = request.strategy if request.strategy in ("fixed", "structural") else "fixed"
-    result = await rag_store.add_document(request.text, source=request.source, strategy=strategy)
+    fmt = request.format if request.format in ("auto", "text", "html", "mhtml") else "auto"
+    result = await rag_store.add_document(request.text, source=request.source,
+                                          strategy=strategy, format=fmt)
     return result
 
 
