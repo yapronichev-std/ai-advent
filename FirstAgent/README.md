@@ -1085,23 +1085,54 @@ elif detected in ("html", "mhtml"):
 
 Развёрнут на удалённой машине:
 - **IP:** `195.58.153.66:8080`
-- **Модель:** Qwen3-4B-Q4_K_M (4B параметров, контекст 8192)
+- **Модель:** Qwen2.5-1.5B-Instruct-Q4_K_M (1.5B параметров, контекст 8192)
 - **CPU:** 4 vCPU Intel Xeon Gold 6240R (AVX512), 8 GB RAM
+- **RAM:** 634 MiB (против 7.3 GB у предыдущей Qwen3-4B)
 
 #### Архитектура
 
 ```
 Browser (Remote LLM tab)
-    │  fetch /chat/remote
+    │  fetch SSE stream /chat/remote
     ▼
 FirstAgent (FastAPI, main.py)
-    │  httpx → POST /v1/chat/completions
+    │  httpx.stream → POST /v1/chat/completions (stream: true)
     ▼
 llama-server (195.58.153.66:8080)
     │  llama.cpp inference
     ▼
-Qwen3-4B-Q4_K_M model
+Qwen2.5-1.5B-Instruct-Q4_K_M model
 ```
+
+#### Ключевые доработки (v2)
+
+**1. SSE-стриминг**
+- `POST /chat/remote` теперь возвращает `StreamingResponse` (`text/event-stream`)
+- Токены приходят по мере генерации — пользователь видит текст сразу, а не через 3-5 минут
+- Формат событий: `data: {"token": "Хорошо", "done": false}` / `data: {"token": "", "done": true, "model": "...", "elapsed_ms": 34600}`
+- Проксирование SSE-потока от llama.cpp через `httpx.AsyncClient.stream()` + `aiter_lines()`
+
+**2. Fallback на reasoning_content**
+- Qwen3 и другие reasoning-модели помещают ответ в `reasoning_content`, оставляя `content` пустым
+- Бэкенд проверяет оба поля: сначала `content`, затем `reasoning_content`
+- Работает как в обычном, так и в стриминговом режиме
+
+**3. Кнопка Stop**
+- Кнопка `⏹ Stop` появляется вместо `Send` во время генерации
+- Вызывает `AbortController.abort()` — прерывает fetch и SSE-стрим
+- Уже полученный текст сохраняется в чате
+
+**4. Смена модели (Qwen3-4B → Qwen2.5-1.5B)**
+
+| Параметр | Было (Qwen3-4B) | Стало (Qwen2.5-1.5B) |
+|----------|-----------------|----------------------|
+| Скорость | ~5 tok/s | **~16 tok/s** (3×) |
+| Время ответа* | 226 сек | **35 сек** (6.5×) |
+| RAM | 7.3 GB | 0.6 GB |
+| reasoning_content | весь ответ | не используется |
+| content | всегда пустой | сразу ответ |
+
+*На запросе «напиши алгоритм быстрой сортировки на языке c++»
 
 #### Новые файлы
 
@@ -1114,19 +1145,21 @@ Qwen3-4B-Q4_K_M model
 - **`main.py`** — добавлены эндпоинты:
   - `GET /chat/remote/health` — проверка доступности сервера (latency, модель, параметры)
   - `GET /chat/remote/models` — список моделей на удалённом сервере
-  - `POST /chat/remote` — отправка сообщения в чат (проксирует запрос к llama.cpp)
+  - `POST /chat/remote` — **SSE-стриминг**: проксирует поток от llama.cpp, извлекает токены из `content` / `reasoning_content`
   - `GET /chat/remote/history` — история чата
   - `DELETE /chat/remote/history` — очистка истории
 - **`static/index.html`** — новая кнопка в навбаре `Remote LLM` и панель `tab-remote`:
   - Индикатор статуса сервера (зелёный/красный/проверка)
   - Диагностическая панель: модель, параметры, контекст, latency
   - Поле ввода с авто-блокировкой при недоступности сервера
+  - Кнопка `⏹ Stop` для остановки генерации
 - **`static/app.js`** — логика вкладки Remote LLM:
   - `checkRemoteHealth()` — health-check при открытии вкладки
   - Авто-мониторинг каждые 30 секунд
-  - Отправка сообщений с индикатором Thinking
+  - **SSE-стриминг** через `ReadableStream` + `TextDecoder` — токены отображаются по мере получения
+  - Кнопка `⏹ Stop` через `AbortController`
   - Отображение времени ответа и tok/s в футере сообщений
-  - Обработка ошибок соединения с кнопкой Retry
+  - Обработка ошибок соединения
   - Вспомогательная функция `escapeHtml()`
 - **`static/style.css`** — стили для Remote LLM:
   - `.remote-server-badge` — адрес сервера
@@ -1134,6 +1167,7 @@ Qwen3-4B-Q4_K_M model
   - `.remote-diag-bar` — панель диагностики
   - `.msg-footer` / `.msg-time` — футер сообщений с метриками
   - `.msg-error-tag` — тег ошибки
+  - `.stop-btn` — кнопка остановки генерации
   - Стили `#remote-input`, `#remote-send-btn` приведены к общему виду с остальными вкладками
 
 #### API Endpoints
@@ -1141,22 +1175,26 @@ Qwen3-4B-Q4_K_M model
 **Проверка здоровья:**
 ```bash
 curl http://localhost:8000/chat/remote/health
-# → {"available": true, "latency_ms": 56, "models": [{"id": "Qwen3-4B-Q4_K_M.gguf", ...}]}
+# → {"available": true, "latency_ms": 56, "models": [{"id": "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf", ...}]}
 ```
 
-**Отправка сообщения:**
+**SSE-стриминг (токены приходят по мере генерации):**
 ```bash
-curl -X POST http://localhost:8000/chat/remote \
+curl -N http://localhost:8000/chat/remote?user_id=test \
   -H "Content-Type: application/json" \
-  -d '{"text": "Привет!", "user_id": "default"}'
-# → {"response": "...", "model": "Qwen3-4B-Q4_K_M.gguf", "elapsed_ms": 20901, "server_available": true}
+  -d '{"text": "Привет!", "user_id": "test"}'
+# data: {"token": "При", "done": false}
+# data: {"token": "вет", "done": false}
+# ...
+# data: {"token": "", "done": true, "model": "Qwen2.5-1.5B...", "elapsed_ms": 1234}
 ```
 
 #### UX-фичи
 
 - 🔴🟢 Индикатор состояния сервера в реальном времени
 - Автоблокировка ввода при недоступности сервера
-- Кнопка Retry при обрыве соединения
+- **Постепенное отображение текста** — токены появляются по мере генерации
+- **Кнопка ⏹ Stop** — мгновенная остановка генерации с сохранением полученного текста
 - Время ответа и скорость генерации (tok/s) под каждым сообщением
 - Общий стиль с остальными вкладками (Chat, Local LLM)
 
@@ -1165,10 +1203,12 @@ curl -X POST http://localhost:8000/chat/remote \
 | Тест | Результат |
 |---|---|
 | Доступ по сети | ✅ latency 56ms |
-| Чат-запрос | ✅ ответ получен за ~21 сек |
+| SSE-стриминг (простой запрос) | ✅ ответ ~1.2 сек, 15.9 tok/s |
+| SSE-стриминг (сложный запрос) | ✅ 35 сек, 1516 символов C++ кода |
 | 5 последовательных запросов | ✅ все успешны, без ошибок |
 | Rate limiting | ✅ не обнаружен (llama.cpp без лимитов) |
-| Длинный контекст (~24K символов) | ⚠️ таймаут 120с (CPU-инференс) |
+| Кнопка Stop | ✅ генерация останавливается, текст сохраняется |
+| Fallback reasoning_content | ✅ пустой content → берётся reasoning_content |
 
 ---
 
@@ -1176,7 +1216,7 @@ curl -X POST http://localhost:8000/chat/remote \
 
 | День | Фича |
 |---|---|
-| Day 30 | Вкладка Remote LLM: чат с удалённой моделью llama.cpp по HTTP API |
+| Day 30 | Вкладка Remote LLM: SSE-стриминг, fallback reasoning_content, кнопка Stop, модель Qwen2.5-1.5B (6.5× быстрее) |
 | Day 29 | Поддержка HTML и MHTML в RAG-системе |
 | Day 28 | Оптимизация локальной модели: параметры, квантование, шаблоны промптов |
 | Day 27 | RAG-система подключена к вкладке Local LLM |
