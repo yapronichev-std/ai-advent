@@ -937,9 +937,9 @@ async def remote_models():
         return resp.json()
 
 
-@app.post("/chat/remote", response_model=RemoteChatResponse)
+@app.post("/chat/remote")
 async def chat_remote(request: MessageRequest):
-    """Send message to remote llama.cpp server."""
+    """SSE-streamed chat with remote llama.cpp server."""
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
@@ -955,34 +955,7 @@ async def chat_remote(request: MessageRequest):
     # Build messages payload
     messages = [{"role": m["role"], "content": m["content"]} for m in history]
 
-    server_available = True
-    error_msg = ""
-    reply = ""
-
-    try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            resp = await client.post(
-                f"{REMOTE_LLAMACPP_URL}/v1/chat/completions",
-                json={
-                    "messages": messages,
-                    "max_tokens": 512,
-                    "temperature": 0.7,
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            reply = data["choices"][0]["message"]["content"]
-    except Exception as e:
-        server_available = False
-        error_msg = str(e)
-        reply = f"[ERROR] Remote server unavailable: {e}"
-
-    if reply:
-        history.append({"role": "assistant", "content": reply})
-
-    elapsed_ms = round((time.monotonic() - t0) * 1000)
-
-    # Get the model name from the remote server
+    # Fetch model name once before streaming
     model_name = "remote-llamacpp"
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -992,14 +965,76 @@ async def chat_remote(request: MessageRequest):
     except Exception:
         pass
 
-    return RemoteChatResponse(
-        response=reply,
-        history=history,
-        model=model_name,
-        elapsed_ms=elapsed_ms,
-        server_available=server_available,
-        error=error_msg,
-    )
+    async def event_gen():
+        full_reply = ""
+        server_available = True
+        error_msg = ""
+
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
+                async with client.stream(
+                    "POST",
+                    f"{REMOTE_LLAMACPP_URL}/v1/chat/completions",
+                    json={
+                        "messages": messages,
+                        "max_tokens": 1024,
+                        "temperature": 0.7,
+                        "stream": True,
+                    },
+                ) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        payload = line[6:]  # strip "data: " prefix
+                        if payload == "[DONE]":
+                            break
+
+                        try:
+                            chunk = json.loads(payload)
+                        except json.JSONDecodeError:
+                            continue
+
+                        choices = chunk.get("choices", [])
+                        if not choices:
+                            continue
+
+                        delta = choices[0].get("delta", {})
+                        finish = choices[0].get("finish_reason")
+
+                        if finish:
+                            break  # end of stream
+
+                        # Qwen3 reasoning models use reasoning_content, not content
+                        token = delta.get("content") or delta.get("reasoning_content") or ""
+                        if token:
+                            full_reply += token
+                            event = {"token": token, "done": False}
+                            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+        except Exception as e:
+            server_available = False
+            error_msg = str(e)
+            full_reply = f"[ERROR] Remote server unavailable: {e}"
+            event = {"token": full_reply, "done": True, "server_available": False, "error": error_msg}
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            return
+
+        # Save full reply to history
+        if full_reply:
+            history.append({"role": "assistant", "content": full_reply})
+
+        elapsed_ms = round((time.monotonic() - t0) * 1000)
+        event = {
+            "token": "",
+            "done": True,
+            "model": model_name,
+            "elapsed_ms": elapsed_ms,
+            "server_available": server_available,
+        }
+        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
 @app.get("/chat/remote/history")

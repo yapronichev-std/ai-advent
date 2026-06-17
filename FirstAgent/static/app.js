@@ -1608,7 +1608,9 @@ const remoteMessages = document.getElementById('remote-messages');
 const remoteForm = document.getElementById('remote-chat-form');
 const remoteInput = document.getElementById('remote-input');
 const remoteSendBtn = document.getElementById('remote-send-btn');
+const remoteStopBtn = document.getElementById('remote-stop-btn');
 const remoteClearBtn = document.getElementById('remote-clear-btn');
+let remoteAbortController = null;  // for stopping in-flight generation
 const remoteStatusDot = document.getElementById('remote-status-dot');
 const remoteDiagBar = document.getElementById('remote-diag-bar');
 const remoteModelName = document.getElementById('remote-model-name');
@@ -1690,60 +1692,124 @@ remoteForm.addEventListener('submit', async (e) => {
     if (!text || !remoteAvailable) return;
 
     remoteInput.value = '';
-    remoteSendBtn.disabled = true;
+    remoteSendBtn.style.display = 'none';
+    remoteStopBtn.style.display = '';
+    remoteStopBtn.disabled = false;
     remoteInput.disabled = true;
 
     appendRemoteMessage('user', text);
-    appendRemoteMessage('thinking', 'Thinking...');
+    appendRemoteMessage('thinking', '');
 
+    const thinkingEl = remoteMessages.querySelector('.message.thinking');
+    let fullText = '';
+
+    remoteAbortController = new AbortController();
     const t0 = performance.now();
+
     try {
         const resp = await fetch(`/chat/remote?user_id=${encodeURIComponent(currentUserId)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text, user_id: currentUserId }),
+            signal: remoteAbortController.signal,
         });
-        const data = await resp.json();
 
-        // Replace the thinking placeholder
-        const thinkingEl = remoteMessages.querySelector('.message.thinking');
-        if (thinkingEl) {
-            thinkingEl.classList.remove('thinking');
-            thinkingEl.classList.add('assistant');
-            const elapsedSec = (data.elapsed_ms / 1000).toFixed(1);
-            const tps = data.response
-                ? (data.response.length / (data.elapsed_ms / 1000)).toFixed(1)
-                : 0;
-            let footerHtml = `<div class="msg-footer"><span class="msg-time">${elapsedSec}s · ~${tps} tok/s</span>`;
-            if (!data.server_available) {
-                footerHtml += ` <span class="msg-error-tag">OFFLINE</span>`;
-            }
-            footerHtml += '</div>';
-
-            const contentHtml = data.server_available
-                ? escapeHtml(data.response).replace(/\n/g, '<br>')
-                : `<span style="color:#ef4444">${escapeHtml(data.response)}</span>`;
-
-            thinkingEl.innerHTML = contentHtml + footerHtml;
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || `HTTP ${resp.status}`);
         }
 
-        // If server went down, update UI
-        if (!data.server_available) {
-            setRemoteOffline(data.error);
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const parts = buffer.split('\n\n');
+            buffer = parts.pop(); // keep incomplete tail
+
+            for (const part of parts) {
+                const line = part.trim();
+                if (!line.startsWith('data: ')) continue;
+                let event;
+                try { event = JSON.parse(line.slice(6)); } catch { continue; }
+
+                if (!event.done) {
+                    // Streaming token
+                    fullText += event.token;
+                    if (thinkingEl) {
+                        thinkingEl.innerHTML = escapeHtml(fullText).replace(/\n/g, '<br>');
+                        remoteMessages.scrollTop = remoteMessages.scrollHeight;
+                    }
+                } else {
+                    // Stream finished
+                    if (thinkingEl) {
+                        thinkingEl.classList.remove('thinking');
+                        thinkingEl.classList.add(event.server_available ? 'assistant' : 'error');
+
+                        const elapsedSec = (event.elapsed_ms / 1000).toFixed(1);
+                        const tps = fullText.length
+                            ? (fullText.length / (event.elapsed_ms / 1000)).toFixed(1)
+                            : 0;
+                        let footerHtml = `<div class="msg-footer"><span class="msg-time">${elapsedSec}s · ~${tps} tok/s</span>`;
+                        if (!event.server_available) {
+                            footerHtml += ` <span class="msg-error-tag">OFFLINE</span>`;
+                        }
+                        footerHtml += '</div>';
+
+                        const contentHtml = event.server_available
+                            ? escapeHtml(fullText).replace(/\n/g, '<br>')
+                            : `<span style="color:#ef4444">${escapeHtml(fullText || event.error || '')}</span>`;
+
+                        thinkingEl.innerHTML = contentHtml + footerHtml;
+                    }
+
+                    if (!event.server_available) {
+                        setRemoteOffline(event.error);
+                    }
+                }
+            }
         }
     } catch (err) {
-        const thinkingEl = remoteMessages.querySelector('.message.thinking');
-        if (thinkingEl) {
-            thinkingEl.classList.remove('thinking');
-            thinkingEl.classList.add('error');
-            thinkingEl.innerHTML = `⚠ Request failed: ${escapeHtml(err.message)}`;
+        if (err.name === 'AbortError') {
+            // User pressed Stop — leave partial text
+            if (thinkingEl && fullText) {
+                thinkingEl.classList.remove('thinking');
+                thinkingEl.classList.add('assistant');
+                thinkingEl.innerHTML = escapeHtml(fullText).replace(/\n/g, '<br>') +
+                    '<div class="msg-footer"><span class="msg-time">stopped</span></div>';
+            } else if (thinkingEl) {
+                thinkingEl.remove();
+            }
+        } else {
+            if (thinkingEl) {
+                thinkingEl.classList.remove('thinking');
+                thinkingEl.classList.add('error');
+                thinkingEl.innerHTML = `⚠ Request failed: ${escapeHtml(err.message)}`;
+            }
+            setRemoteOffline(err.message);
         }
-        setRemoteOffline(err.message);
     }
 
+    remoteAbortController = null;
+    remoteSendBtn.style.display = '';
+    remoteStopBtn.style.display = 'none';
+    remoteStopBtn.disabled = true;
     remoteSendBtn.disabled = !remoteAvailable;
     remoteInput.disabled = !remoteAvailable;
     if (remoteAvailable) remoteInput.focus();
+});
+
+// ── Stop button ───────────────────────────────────────────────────────────
+
+remoteStopBtn.addEventListener('click', () => {
+    if (remoteAbortController) {
+        remoteAbortController.abort();
+        remoteStopBtn.disabled = true;
+    }
 });
 
 // ── Clear ─────────────────────────────────────────────────────────────────
