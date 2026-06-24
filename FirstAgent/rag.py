@@ -258,14 +258,60 @@ async def _get_embedding(text: str) -> list[float]:
 # ── RAG Store ─────────────────────────────────────────────────────────────────
 
 class RAGStore:
-    def __init__(self):
+    def __init__(self, project_path: str = ""):
         RAG_DIR.mkdir(parents=True, exist_ok=True)
         self._client = chromadb.PersistentClient(path=str(RAG_DIR))
-        self._collection = self._client.get_or_create_collection(
-            name="documents",
-            metadata={"hnsw:space": "cosine"},
-        )
-        logger.info("[RAG] initialized, %d chunks in collection", self._collection.count())
+        self._project_path = ""
+        self._collection = None
+        # Set initial project
+        self.set_project(project_path or str(Path.cwd()))
+
+    def _collection_name(self, project_path: str) -> str:
+        """Derive a stable collection name from the project path."""
+        import hashlib
+        h = hashlib.md5(str(project_path).encode()).hexdigest()[:12]
+        name = Path(project_path).name
+        # Sanitize: keep only alphanumeric, dash, underscore
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
+        return f"rag_{safe}_{h}"
+
+    def set_project(self, project_path: str) -> None:
+        """Switch the active collection to the given project path."""
+        name = self._collection_name(project_path)
+        old_name = getattr(self._collection, 'name', 'none')
+        try:
+            self._collection = self._client.get_collection(name)
+        except Exception:
+            self._collection = self._client.create_collection(
+                name=name,
+                metadata={"hnsw:space": "cosine"},
+            )
+        self._project_path = str(project_path)
+        logger.info("[RAG] switched collection: %s → %s  chunks=%d  project=%s",
+                     old_name, name, self._collection.count(), self._project_path)
+
+    def count(self) -> int:
+        """Return number of chunks in the active collection."""
+        return self._collection.count() if self._collection else 0
+
+    def delete_project(self, project_path: str) -> int:
+        """Delete the ChromaDB collection for a project. Returns chunks deleted."""
+        name = self._collection_name(project_path)
+        try:
+            chunks = self._client.get_collection(name).count()
+            self._client.delete_collection(name)
+            logger.info("[RAG] deleted collection=%s  chunks=%d", name, chunks)
+            # If we deleted the active collection, switch to home
+            if self._project_path == str(project_path):
+                self.set_project(str(Path.home()))
+            return chunks
+        except Exception:
+            logger.warning("[RAG] collection not found: %s", name)
+            return 0
+
+    @property
+    def project_path(self) -> str:
+        return self._project_path
 
     async def add_document_stream(
         self, text: str, source: str = "", strategy: ChunkStrategy = "fixed",
@@ -412,7 +458,9 @@ class RAGStore:
                 "extracted_title": extracted_title}
 
     async def retrieve(self, query: str, top_k: int = 5) -> list[dict]:
+        col_name = getattr(self._collection, 'name', '?')
         total = self._collection.count()
+        logger.info("[RAG] retrieve collection=%s  chunks=%d  query=%.80s", col_name, total, query)
         if total == 0:
             return []
         embedding = await _get_embedding(query)

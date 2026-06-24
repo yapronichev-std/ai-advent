@@ -84,6 +84,11 @@ class ChatAgent:
             self._last_rag_no_context = False
             return command_response, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "response_time_ms": 0}, []
 
+        # If this is /help <question>, enrich with project context from MCP
+        stripped = user_message.strip()
+        if stripped.startswith("/help ") and len(stripped) > 6:
+            user_message = await self._enrich_help_question(stripped)
+
         # Проверяем, является ли запрос диаграммным, и запускаем пайплайн
         if self.diagram_pipeline:
             t0 = time.monotonic()
@@ -767,8 +772,16 @@ class ChatAgent:
             return response_text
 
         if cmd == "/help":
+            if args:
+                # /help <question> — use RAG + MCP to answer project questions
+                return None  # falls through to LLM pipeline with project context
+            # /help (no args) — show command list + project summary
             return (
-                "Multi-server demo:\n"
+                "📚 **Ассистент разработчика** — отвечает на вопросы о проекте\n"
+                "Используйте `/help <вопрос>` чтобы спросить о структуре, архитектуре, коде.\n"
+                "Например: `/help Какая архитектура у проекта?`\n"
+                "\n**Доступные команды:**\n"
+                "\nMulti-server demo:\n"
                 "  /report [topic]           — search + diagram + Telegram (multi-MCP flow)\n"
                 "                              по умолчанию: «Telegram bot»\n"
                 "\nRAG commands (use API endpoints to manage documents):\n"
@@ -803,6 +816,101 @@ class ChatAgent:
             )
 
         return None  # unknown command — let the LLM handle it
+
+    async def _enrich_help_question(self, message: str) -> str:
+        """Enrich a /help <question> with project context from MCP git tools.
+
+        Returns the enriched user message that will be sent to the LLM instead
+        of the raw /help command.
+        """
+        question = message[len("/help "):].strip()
+
+        context_parts: list[str] = []
+
+        # ── Gather project context from MCP git tools ──────────────────────
+        if self.mcp_client:
+            # Git branch
+            try:
+                branch_json = await self.mcp_client.call_tool("get_git_branch", {})
+                import json as _json
+                branch_data = _json.loads(branch_json)
+                if "current_branch" in branch_data:
+                    context_parts.append(
+                        f"- Git branch: **{branch_data['current_branch']}**"
+                    )
+                    if branch_data.get("last_commit"):
+                        lc = branch_data["last_commit"]
+                        context_parts.append(
+                            f"- Last commit: {lc.get('message', '')} "
+                            f"(by {lc.get('author', '?')}, {lc.get('date', '?')})"
+                        )
+            except Exception:
+                pass
+
+            # Project file listing
+            try:
+                files_json = await self.mcp_client.call_tool(
+                    "list_project_files", {"max_files": 60}
+                )
+                files_data = _json.loads(files_json)
+                if files_data.get("top_level_dirs"):
+                    dirs = ", ".join(files_data["top_level_dirs"])
+                    context_parts.append(f"- Top-level directories: {dirs}")
+                if files_data.get("files"):
+                    py_files = [
+                        f["path"] for f in files_data["files"]
+                        if f["path"].endswith(".py")
+                    ][:15]
+                    md_files = [
+                        f["path"] for f in files_data["files"]
+                        if f["path"].endswith(".md")
+                    ][:10]
+                    if py_files:
+                        context_parts.append(
+                            f"- Python files: {', '.join(py_files)}"
+                        )
+                    if md_files:
+                        context_parts.append(
+                            f"- Documentation files: {', '.join(md_files)}"
+                        )
+            except Exception:
+                pass
+
+            # Git status
+            try:
+                status_json = await self.mcp_client.call_tool("get_git_status", {})
+                status_data = _json.loads(status_json)
+                if status_data.get("is_clean"):
+                    context_parts.append("- Git status: clean working tree")
+                else:
+                    context_parts.append(
+                        f"- Git status: {status_data.get('staged_count', 0)} staged, "
+                        f"{status_data.get('unstaged_count', 0)} unstaged, "
+                        f"{status_data.get('untracked_count', 0)} untracked"
+                    )
+            except Exception:
+                pass
+
+        # ── Build the enriched message ──────────────────────────────────────
+        context_block = ""
+        if context_parts:
+            context_block = (
+                "[Текущий контекст проекта]\n"
+                + "\n".join(context_parts)
+                + "\n\n"
+            )
+
+        enriched = (
+            f"{context_block}"
+            f"[Вопрос о проекте]\n"
+            f"{question}\n\n"
+            f"Ответь на вопрос о проекте, используя документацию (README, CLAUDE.md, docs/) "
+            f"и контекст проекта выше. Отвечай на русском языке если вопрос задан по-русски. "
+            f"Будь конкретен: ссылайся на файлы, структуру и архитектуру проекта."
+        )
+
+        logger.debug("[agent] enriched /help question: %s", enriched[:200])
+        return enriched
 
     def _resolve_invariant_id(self, arg: str) -> Optional[str]:
         """Resolve a 1-based position number or inv_XXXXXXXX id to an id string."""

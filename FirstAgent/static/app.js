@@ -72,6 +72,15 @@ const userNewInput     = document.getElementById('user-new-input');
 const userNewConfirm   = document.getElementById('user-new-confirm');
 const userNewCancel    = document.getElementById('user-new-cancel');
 
+// ── Project bar elements ────────────────────────────────────────────────────
+const projectBar       = document.getElementById('project-bar');
+const projectPathInput = document.getElementById('project-path-input');
+const projectSwitchBtn = document.getElementById('project-switch-btn');
+const projectBranch    = document.getElementById('project-branch');
+const projectChunks    = document.getElementById('project-chunks');
+const projectBrowseBtn = document.getElementById('project-browse-btn');
+const projectsSidebarList = document.getElementById('projects-sidebar-list');
+
 // ── Memory elements ────────────────────────────────────────────────────────
 const refreshMemBtn    = document.getElementById('refresh-memory-btn');
 const memStCount       = document.getElementById('mem-st-count');
@@ -96,6 +105,221 @@ const taskFsmStates    = document.querySelectorAll('.task-fsm-state');
 
 let currentLtCategory = 'profile';
 const WARNING_THRESHOLD = 0.8;
+
+// ── Message history (Up/Down arrow navigation) ────────────────────────────────
+const MAX_MESSAGE_HISTORY = 10;
+const MH_STORAGE_KEY = 'chat_message_history';
+
+function _loadMessageHistory() {
+    try {
+        const raw = localStorage.getItem(MH_STORAGE_KEY);
+        return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+}
+function _saveMessageHistory() {
+    try {
+        localStorage.setItem(MH_STORAGE_KEY, JSON.stringify(messageHistory));
+    } catch { /* quota exceeded — ignore */ }
+}
+
+const messageHistory = _loadMessageHistory();
+let historyCursor = -1;    // -1 = not navigating, 0 = latest, N = older
+let historyDraft = '';     // saved text before navigation
+
+// ── Project switching ────────────────────────────────────────────────────────
+
+async function loadProjectInfo() {
+    try {
+        const res = await fetch('/project');
+        if (!res.ok) return;
+        const info = await res.json();
+        projectPathInput.value = info.project_root || '';
+        projectBranch.textContent = info.git_branch || '—';
+        const count = info.rag_doc_count || 0;
+        projectChunks.textContent = count ? `${count} chunks indexed` : '';
+    } catch (_) {}
+}
+
+function setProjectLoading(loading) {
+    const progressWrap = document.getElementById('project-progress-wrap');
+    const progressFill = document.getElementById('project-progress-fill');
+    const progressLabel = document.getElementById('project-progress-label');
+
+    if (loading) {
+        projectBar.classList.add('project-loading');
+        projectSwitchBtn.disabled = true;
+        projectSwitchBtn.textContent = '⏳';
+        projectBrowseBtn.disabled = true;
+        projectPathInput.disabled = true;
+        projectsSidebarList.style.pointerEvents = 'none';
+        projectsSidebarList.style.opacity = '0.5';
+        if (progressWrap) progressWrap.hidden = false;
+        if (progressFill) progressFill.style.width = '0%';
+        if (progressLabel) progressLabel.textContent = 'Connecting...';
+    } else {
+        projectBar.classList.remove('project-loading');
+        projectSwitchBtn.disabled = false;
+        projectSwitchBtn.textContent = 'Switch';
+        projectBrowseBtn.disabled = false;
+        projectPathInput.disabled = false;
+        projectsSidebarList.style.pointerEvents = '';
+        projectsSidebarList.style.opacity = '';
+        if (progressWrap) progressWrap.hidden = true;
+    }
+}
+
+function setProjectProgress(current, total, message) {
+    const fill = document.getElementById('project-progress-fill');
+    const label = document.getElementById('project-progress-label');
+    if (fill) fill.style.width = total > 0 ? `${Math.round((current / total) * 100)}%` : '0%';
+    if (label) label.textContent = message || '';
+}
+
+async function switchProject() {
+    const newPath = projectPathInput.value.trim();
+    if (!newPath) return;
+
+    setProjectLoading(true);
+    setProjectProgress(0, 1, 'Validating...');
+
+    try {
+        const res = await fetch('/project/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ project_root: newPath }),
+        });
+
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let result = null;
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const parts = buffer.split('\n\n');
+            buffer = parts.pop();
+
+            for (const part of parts) {
+                const line = part.trim();
+                if (!line.startsWith('data: ')) continue;
+                let event;
+                try { event = JSON.parse(line.slice(6)); } catch { continue; }
+
+                if (event.type === 'progress') {
+                    setProjectProgress(event.current, event.total, event.message);
+                } else if (event.type === 'done') {
+                    result = event;
+                } else if (event.type === 'error') {
+                    throw new Error(event.message || 'Switch failed');
+                }
+            }
+        }
+
+        if (result) {
+            projectBranch.textContent = result.git_branch || '?';
+            const skipped = result.rag_skipped ? ' (reuse)' : '';
+            projectChunks.textContent = result.rag_chunks
+                ? `${result.rag_chunks} chunks indexed${skipped}`
+                : '';
+            loadRecentProjects();
+            projectBar.style.background = '#ecfdf5';
+            setTimeout(() => { projectBar.style.background = ''; }, 1500);
+        }
+    } catch (err) {
+        alert('Failed to switch project: ' + err.message);
+        projectBar.style.background = '#fef2f2';
+        setTimeout(() => { projectBar.style.background = ''; }, 2000);
+    } finally {
+        setProjectLoading(false);
+    }
+}
+
+// ── Native folder picker ──────────────────────────────────────────────────────
+
+async function pickFolder() {
+    projectBrowseBtn.disabled = true;
+    projectBrowseBtn.textContent = '…';
+    try {
+        const res = await fetch('/pick-folder', { method: 'POST' });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            alert('Folder picker failed: ' + (err.detail || 'HTTP ' + res.status));
+            return;
+        }
+        const data = await res.json();
+        if (data.path) {
+            projectPathInput.value = data.path;
+            switchProject();
+        }
+        // cancelled → do nothing
+    } catch (_) {
+        alert('Folder picker unavailable');
+    } finally {
+        projectBrowseBtn.disabled = false;
+        projectBrowseBtn.textContent = '📂';
+    }
+}
+
+// ── Recent projects sidebar ───────────────────────────────────────────────────
+
+async function loadRecentProjects() {
+    try {
+        const res = await fetch('/projects/recent');
+        if (!res.ok) return;
+        const { projects } = await res.json();
+        renderRecentProjects(projects || []);
+    } catch (_) {}
+}
+
+function renderRecentProjects(projects) {
+    if (!projects || projects.length === 0) {
+        projectsSidebarList.innerHTML = '<div class="project-sidebar-empty">No recent projects</div>';
+        return;
+    }
+    const currentPath = projectPathInput.value.trim();
+    projectsSidebarList.innerHTML = projects.map(p => {
+        const active = p.path === currentPath ? ' active' : '';
+        return `<div class="project-sidebar-item${active}" data-path="${p.path}" title="${p.path}">
+            <span class="ps-name">📁 ${p.name || p.path.split('/').pop()}</span>
+            <span class="ps-branch">${p.branch || ''}</span>
+            <span class="ps-remove" data-remove="${p.path}">✕</span>
+        </div>`;
+    }).join('');
+
+    // Click to switch
+    projectsSidebarList.querySelectorAll('.project-sidebar-item').forEach(el => {
+        el.addEventListener('click', (e) => {
+            if (e.target.classList.contains('ps-remove')) return;
+            const path = el.dataset.path;
+            projectPathInput.value = path;
+            switchProject();
+        });
+    });
+
+    // Click to remove
+    projectsSidebarList.querySelectorAll('.ps-remove').forEach(el => {
+        el.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const path = el.dataset.remove;
+            const res = await fetch(`/projects/recent?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+            const data = await res.json().catch(() => ({}));
+            const deleted = data.rag_deleted || 0;
+            if (deleted > 0) {
+                projectChunks.textContent = `🗑️ ${deleted} RAG chunks deleted`;
+                setTimeout(() => loadProjectInfo(), 1500);
+            }
+            loadRecentProjects();
+        });
+    });
+}
 
 // ── User management ─────────────────────────────────────────────────────────
 
@@ -359,10 +583,11 @@ function appendRagSources(msgEl, sources, noContext, scrollEl) {
     const headerLabel = sources.length === 1 ? '1 source' : `${sources.length} sources`;
     const header = document.createElement('div');
     header.className = 'rag-sources-header';
-    header.textContent = `📚 ${headerLabel}`;
+    header.textContent = `📚 ${headerLabel} ▸`;
 
     const list = document.createElement('div');
     list.className = 'rag-sources-list';
+    list.style.display = 'none';  // collapsed by default (inline style beats CSS)
 
     sources.forEach((r, i) => {
         const item = document.createElement('div');
@@ -388,6 +613,14 @@ function appendRagSources(msgEl, sources, noContext, scrollEl) {
             `<span class="rag-source-preview">${preview}${ellipsis}</span>`;
 
         list.appendChild(item);
+    });
+
+    // Toggle expand/collapse on header click
+    header.style.cursor = 'pointer';
+    header.addEventListener('click', () => {
+        const collapsed = list.style.display === 'none';
+        list.style.display = collapsed ? '' : 'none';
+        header.textContent = `📚 ${headerLabel} ${collapsed ? '▾' : '▸'}`;
     });
 
     container.appendChild(header);
@@ -452,6 +685,16 @@ form.addEventListener('submit', (e) => {
     e.preventDefault();
     const text = input.value.trim();
     if (!text) return;
+
+    // Save to message history (persisted in localStorage)
+    if (messageHistory[0] !== text) {
+        messageHistory.unshift(text);
+        if (messageHistory.length > MAX_MESSAGE_HISTORY) messageHistory.pop();
+        _saveMessageHistory();
+    }
+    historyCursor = -1;
+    historyDraft = '';
+
     input.value = '';
     input.style.height = 'auto';
     sendMessage(text);
@@ -461,6 +704,38 @@ input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         form.dispatchEvent(new Event('submit'));
+        return;
+    }
+
+    // ── Up/Down arrow: message history navigation ────────────────────────
+    if (e.key === 'ArrowUp' && messageHistory.length > 0) {
+        e.preventDefault();
+        if (historyCursor === -1) {
+            historyDraft = input.value;
+            historyCursor = 0;
+        } else if (historyCursor < messageHistory.length - 1) {
+            historyCursor++;
+        }
+        input.value = messageHistory[historyCursor];
+        // Move cursor to end of text
+        input.setSelectionRange(input.value.length, input.value.length);
+        input.dispatchEvent(new Event('input')); // trigger auto-resize
+    }
+
+    if (e.key === 'ArrowDown') {
+        if (historyCursor > 0) {
+            e.preventDefault();
+            historyCursor--;
+            input.value = messageHistory[historyCursor];
+            input.setSelectionRange(input.value.length, input.value.length);
+            input.dispatchEvent(new Event('input'));
+        } else if (historyCursor === 0) {
+            e.preventDefault();
+            historyCursor = -1;
+            input.value = historyDraft;
+            historyDraft = '';
+            input.dispatchEvent(new Event('input'));
+        }
     }
 });
 
@@ -1029,7 +1304,14 @@ loadModels();
 loadUsers();
 loadMemory();
 loadShortTerm();
+loadProjectInfo();
+loadRecentProjects();
 refreshMemBtn.addEventListener('click', () => { loadMemory(); loadShortTerm(); });
+projectSwitchBtn.addEventListener('click', switchProject);
+projectBrowseBtn.addEventListener('click', pickFolder);
+projectPathInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') switchProject();
+});
 
 // Tab switching
 memTabs.forEach(tab => {

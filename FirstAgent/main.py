@@ -2,6 +2,8 @@ import asyncio
 import json
 import logging
 import os
+import platform
+import subprocess
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -20,6 +22,7 @@ from config import load_system_prompt, save_system_prompt
 from diagram_pipeline import DiagramPipeline
 from invariants import InvariantStore
 from mcp_drawio_client import MCPDrawioClient
+from mcp_git_client import MCPGitClient
 from mcp_multi import MultiMCPClient
 from mcp_search_client import MCPSearchClient
 from mcp_telegram_client import MCPTelegramClient
@@ -52,6 +55,7 @@ local_chat_history: dict[str, list[dict]] = {}  # user_id → messages for local
 profile_manager = UserProfileManager()
 invariant_store = InvariantStore()
 mcp_client: MultiMCPClient | None = None
+git_client: MCPGitClient | None = None
 search_client: MCPSearchClient | None = None
 telegram_client: MCPTelegramClient | None = None
 telegram_chat_id: str = ""
@@ -105,9 +109,80 @@ def get_agent(user_id: str) -> ChatAgent:
     return agents[user_id]
 
 
+async def _index_project_docs(rag_store: RAGStore) -> None:
+    """Auto-index README.md, CLAUDE.md and all text files from docs/ into RAG.
+
+    Uses the active project path from rag_store.
+    Skips sources that are already indexed to avoid duplicates across restarts.
+    """
+    project_root = Path(rag_store.project_path).resolve()
+    docs_to_index: list[tuple[str, str, str]] = []  # (filepath, source_label, strategy)
+
+    # README.md
+    readme = project_root / "README.md"
+    if readme.exists():
+        docs_to_index.append((str(readme), "README.md", "structural"))
+
+    # CLAUDE.md
+    claude_md = project_root / "CLAUDE.md"
+    if claude_md.exists():
+        docs_to_index.append((str(claude_md), "CLAUDE.md", "structural"))
+
+    # Files from docs/ directory (recursively, text files only)
+    docs_dir = project_root / "docs"
+    if docs_dir.exists():
+        text_extensions = {".txt", ".md", ".rst", ".py", ".json", ".yaml", ".yml", ".xml", ".html", ".css", ".js"}
+        for fpath in docs_dir.rglob("*"):
+            if fpath.is_file() and fpath.suffix.lower() in text_extensions:
+                rel = fpath.relative_to(project_root)
+                docs_to_index.append((str(fpath), str(rel), "fixed"))
+
+    if not docs_to_index:
+        print("No project documentation files found to index into RAG")
+        return
+
+    # ── Determine which sources are already indexed ─────────────────────────
+    try:
+        existing = rag_store._collection.get(include=["metadatas"])
+        indexed_sources: set[str] = set()
+        if existing and existing["metadatas"]:
+            for meta in existing["metadatas"]:
+                src = meta.get("source", "")
+                if src:
+                    indexed_sources.add(src)
+    except Exception:
+        indexed_sources = set()
+
+    new_docs = [
+        (fp, src, strat) for fp, src, strat in docs_to_index
+        if src not in indexed_sources
+    ]
+
+    if not new_docs:
+        print(f"Project docs already indexed ({len(docs_to_index)} sources up to date)")
+        return
+
+    print(f"Indexing {len(new_docs)} new project documentation file(s) into RAG...")
+    indexed = 0
+    for filepath, source, strategy in new_docs:
+        try:
+            text = Path(filepath).read_text(encoding="utf-8")
+            # Skip very large files (> 1MB) to avoid overwhelming RAG
+            if len(text) > 1_000_000:
+                print(f"  SKIP (too large, {len(text)} bytes): {source}")
+                continue
+            result = await rag_store.add_document(text=text, source=source, strategy=strategy)
+            print(f"  OK  {source} → {result.get('chunks', 0)} chunks [{result.get('strategy', strategy)}]")
+            indexed += 1
+        except Exception as e:
+            print(f"  FAIL  {source}: {e}")
+
+    print(f"Project docs indexed: {indexed}/{len(new_docs)} new")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global api_key, deepseek_api_key, mcp_client, search_client, telegram_client, telegram_chat_id, diagram_pipeline, rag_store
+    global api_key, deepseek_api_key, mcp_client, git_client, search_client, telegram_client, telegram_chat_id, diagram_pipeline, rag_store
     api_key = os.getenv("OPENROUTER_API_KEY", "")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set in .env")
@@ -115,6 +190,7 @@ async def lifespan(app: FastAPI):
 
     # ── Создаём все MCP-клиенты ───────────────────────────────────────────────
     _drawio = MCPDrawioClient()
+    _git = MCPGitClient()
     # _search = MCPSearchClient()  # disabled
 
     telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -124,7 +200,10 @@ async def lifespan(app: FastAPI):
     else:
         print("INFO: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set — Telegram notifications disabled")
 
-    all_clients = [_drawio] + ([_telegram] if _telegram else [])
+    all_clients = [_drawio, _git] + ([_telegram] if _telegram else [])
+
+    # Store the git client globally so we can reconnect it on project switch
+    git_client = _git
 
     # ── Подключаем все через MultiMCPClient ───────────────────────────────────
     mcp_client = MultiMCPClient(all_clients)
@@ -170,11 +249,16 @@ async def lifespan(app: FastAPI):
 
     # ── RAG store ─────────────────────────────────────────────────────────────
     try:
-        rag_store = RAGStore()
-        print(f"RAGStore ready (Ollama nomic-embed-text, ChromaDB persistent)")
+        default_project = Path(os.getenv("PROJECT_ROOT", Path.cwd())).resolve()
+        rag_store = RAGStore(project_path=str(default_project))
+        print(f"RAGStore ready (Ollama nomic-embed-text, ChromaDB, per-project collections)")
     except Exception as e:
         print(f"WARNING: RAGStore unavailable: {e}")
         rag_store = None
+
+    # ── Auto-index project documentation into RAG ────────────────────────────
+    if rag_store and rag_store.count() == 0:
+        await _index_project_docs(rag_store)
 
     # ── Control questions ───────────────────────────────────────────────────
     global control_questions
@@ -320,6 +404,322 @@ async def get_history(user_id: str = Query(default="default")):
 async def clear_history(user_id: str = Query(default="default")):
     get_agent(user_id).clear_history()
     return {"status": "ok", "user_id": user_id}
+
+
+# ── Project switching ───────────────────────────────────────────────────────────
+
+@app.get("/project")
+async def get_project_info():
+    """Return current project root, branch, and indexed doc count."""
+    info = {
+        "project_root": str(Path(os.getenv("PROJECT_ROOT", Path.cwd())).resolve()),
+        "rag_doc_count": rag_store.count() if rag_store else 0,
+    }
+    # Try to get git branch
+    if mcp_client:
+        try:
+            branch_json = await mcp_client.call_tool("get_git_branch", {})
+            branch_data = json.loads(branch_json)
+            info["git_branch"] = branch_data.get("current_branch", "?")
+            info["all_branches"] = branch_data.get("all_branches", [])
+            lc = branch_data.get("last_commit")
+            if lc:
+                info["last_commit"] = f"{lc.get('message', '')[:80]} ({lc.get('author', '?')})"
+        except Exception:
+            info["git_branch"] = "unknown"
+    return info
+
+
+@app.post("/project")
+async def switch_project(request: dict):
+    """Switch to a different project directory.
+
+    Expects: {"project_root": "/absolute/path/to/project"}
+    Reconnects the git MCP client and re-indexes docs from the new project.
+    """
+    global mcp_client, git_client, rag_store
+
+    new_root = request.get("project_root", "").strip()
+    if not new_root:
+        raise HTTPException(status_code=400, detail="project_root is required")
+
+    new_path = Path(new_root).resolve()
+    if not new_path.exists():
+        raise HTTPException(status_code=400, detail=f"Directory not found: {new_path}")
+    if not new_path.is_dir():
+        raise HTTPException(status_code=400, detail=f"Not a directory: {new_path}")
+
+    # ── Update git MCP project root ──────────────────────────────────────
+    if mcp_client:
+        try:
+            await mcp_client.call_tool("set_project_root", {"path": str(new_path)})
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to set project root: {e}")
+
+    # ── Update PROJECT_ROOT for future RAG indexing ───────────────────────
+    os.environ["PROJECT_ROOT"] = str(new_path)
+
+    # ── Switch RAG to the new project's collection ─────────────────────────
+    reindex_result = {"indexed": 0, "skipped": False}
+    if rag_store:
+        rag_store.set_project(str(new_path))
+        if rag_store.count() == 0:
+            # First time — index docs
+            await _index_project_docs(rag_store)
+            reindex_result["indexed"] = rag_store.count()
+        else:
+            reindex_result["indexed"] = rag_store.count()
+            reindex_result["skipped"] = True
+
+    # ── Get git branch for response ──────────────────────────────────────
+    branch_info = {}
+    if mcp_client:
+        try:
+            branch_json = await mcp_client.call_tool("get_git_branch", {})
+            branch_data = json.loads(branch_json)
+            branch_info["branch"] = branch_data.get("current_branch", "?")
+        except Exception:
+            branch_info["branch"] = "?"
+
+    # ── Remember this project ────────────────────────────────────────────
+    _add_recent_project(str(new_path), branch_info.get("branch", ""))
+
+    return {
+        "status": "ok",
+        "project_root": str(new_path),
+        "git_branch": branch_info.get("branch", "?"),
+        "rag_chunks": reindex_result["indexed"],
+        "rag_skipped": reindex_result.get("skipped", False),
+        "mcp_tools": len(mcp_client.tools) if mcp_client else 0,
+    }
+
+
+@app.post("/project/stream")
+async def switch_project_stream(request: dict):
+    """SSE-streamed project switch with progress events.
+
+    Events: {type: "progress", stage: "git"|"rag"|"done",
+             message: str, current: int, total: int}
+    """
+    global mcp_client, git_client, rag_store
+
+    new_root = request.get("project_root", "").strip()
+    if not new_root:
+        raise HTTPException(status_code=400, detail="project_root is required")
+
+    new_path = Path(new_root).resolve()
+    if not new_path.exists():
+        raise HTTPException(status_code=400, detail=f"Directory not found: {new_path}")
+    if not new_path.is_dir():
+        raise HTTPException(status_code=400, detail=f"Not a directory: {new_path}")
+
+    async def event_stream():
+        # ── Stage 1: Git reconnect ────────────────────────────────────────
+        yield _sse({"type": "progress", "stage": "git", "message": "Reconnecting git...",
+                      "current": 0, "total": 1})
+
+        if mcp_client:
+            try:
+                await mcp_client.call_tool("set_project_root", {"path": str(new_path)})
+                yield _sse({"type": "progress", "stage": "git", "message": "Git connected",
+                              "current": 1, "total": 1})
+            except Exception as e:
+                yield _sse({"type": "error", "message": f"Failed to set project root: {e}"})
+                return
+
+        # ── Stage 2: RAG re-index ──────────────────────────────────────────
+        os.environ["PROJECT_ROOT"] = str(new_path)
+
+        if rag_store:
+            rag_store.set_project(str(new_path))
+            if rag_store.count() == 0:
+                # Collect and index — inline for progress events
+                project_root = new_path
+                docs_to_index: list[tuple[str, str, str]] = []
+                for md_name in ["README.md", "CLAUDE.md"]:
+                    f = project_root / md_name
+                    if f.exists():
+                        docs_to_index.append((str(f), md_name, "structural"))
+
+                docs_dir = project_root / "docs"
+                if docs_dir.exists():
+                    text_exts = {".txt", ".md", ".rst", ".py", ".json", ".yaml", ".yml", ".xml", ".html", ".css", ".js"}
+                    for fpath in docs_dir.rglob("*"):
+                        if fpath.is_file() and fpath.suffix.lower() in text_exts:
+                            docs_to_index.append((str(fpath), str(fpath.relative_to(project_root)), "fixed"))
+
+                total = len(docs_to_index)
+                yield _sse({"type": "progress", "stage": "rag", "message": f"Indexing {total} docs...",
+                              "current": 0, "total": total})
+
+                for i, (filepath, source, strategy) in enumerate(docs_to_index):
+                    try:
+                        text = Path(filepath).read_text(encoding="utf-8")
+                        if len(text) > 1_000_000:
+                            continue
+                        await rag_store.add_document(text=text, source=source, strategy=strategy)
+                        yield _sse({"type": "progress", "stage": "rag",
+                                      "message": f"Indexed: {source}",
+                                      "current": i + 1, "total": total})
+                    except Exception:
+                        pass
+            else:
+                yield _sse({"type": "progress", "stage": "rag",
+                              "message": f"Already indexed ({rag_store.count()} chunks) — skipping",
+                              "current": 1, "total": 1})
+
+        # ── Stage 3: Done ──────────────────────────────────────────────────
+        branch_info = {}
+        if mcp_client:
+            try:
+                branch_json = await mcp_client.call_tool("get_git_branch", {})
+                branch_data = json.loads(branch_json)
+                branch_info["branch"] = branch_data.get("current_branch", "?")
+            except Exception:
+                branch_info["branch"] = "?"
+
+        _add_recent_project(str(new_path), branch_info.get("branch", ""))
+        chunk_count = rag_store.count() if rag_store else 0
+
+        yield _sse({"type": "done",
+                      "project_root": str(new_path),
+                      "git_branch": branch_info.get("branch", "?"),
+                      "rag_chunks": chunk_count,
+                      "mcp_tools": len(mcp_client.tools) if mcp_client else 0})
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+def _sse(data: dict) -> str:
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@app.post("/pick-folder")
+async def pick_folder():
+    """Open the native OS folder picker and return the absolute path.
+
+    macOS — Finder via osascript
+    Linux — Zenity / KDialog
+    Windows — PowerShell FolderBrowserDialog
+    """
+    system = platform.system()
+
+    if system == "Darwin":
+        script = (
+            'tell application "Finder"\n'
+            '    activate\n'
+            '    set folderPath to choose folder '
+            'with prompt "Select project folder"\n'
+            '    return POSIX path of folderPath\n'
+            'end tell'
+        )
+        cmd = ["osascript", "-e", script]
+
+    elif system == "Linux":
+        if subprocess.run(["which", "zenity"], capture_output=True).returncode == 0:
+            cmd = ["zenity", "--file-selection", "--directory",
+                   "--title=Select project folder"]
+        elif subprocess.run(["which", "kdialog"], capture_output=True).returncode == 0:
+            cmd = ["kdialog", "--getexistingdirectory", os.path.expanduser("~")]
+        else:
+            raise HTTPException(status_code=400, detail="Install zenity: sudo apt install zenity")
+
+    elif system == "Windows":
+        ps_script = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "$f = New-Object System.Windows.Forms.FolderBrowserDialog; "
+            "$f.Description = 'Select project folder'; "
+            "if ($f.ShowDialog() -eq 'OK') { $f.SelectedPath }"
+        )
+        cmd = ["powershell", "-Command", ps_script]
+
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported platform: {system}")
+
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run, cmd, capture_output=True, text=True, timeout=120
+        )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=500, detail="Dialog timed out")
+
+    selected = result.stdout.strip()
+    err = result.stderr.strip()
+
+    # User cancelled
+    if result.returncode != 0 or not selected:
+        return {"path": None, "cancelled": True}
+
+    p = Path(selected)
+    if not p.is_dir():
+        raise HTTPException(status_code=400, detail=f"Not a directory: {selected}")
+
+    return {"path": str(p), "cancelled": False}
+
+
+# ── Recent projects ─────────────────────────────────────────────────────────────
+
+RECENT_PROJECTS_FILE = Path("memory/recent_projects.json")
+MAX_RECENT_PROJECTS = 20
+
+
+def _load_recent_projects() -> list[dict]:
+    """Return list of recent projects: [{path, name, branch, last_used}, ...]."""
+    try:
+        if RECENT_PROJECTS_FILE.exists():
+            data = json.loads(RECENT_PROJECTS_FILE.read_text())
+            if isinstance(data, list):
+                return data
+    except Exception:
+        pass
+    return []
+
+
+def _save_recent_projects(projects: list[dict]) -> None:
+    RECENT_PROJECTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    RECENT_PROJECTS_FILE.write_text(json.dumps(projects, ensure_ascii=False, indent=2))
+
+
+def _add_recent_project(project_path: str, branch: str = "") -> None:
+    projects = _load_recent_projects()
+    # Remove if already exists
+    projects = [p for p in projects if p.get("path") != project_path]
+    # Add to front
+    projects.insert(0, {
+        "path": project_path,
+        "name": Path(project_path).name,
+        "branch": branch,
+        "last_used": time.strftime("%Y-%m-%d %H:%M"),
+    })
+    # Limit
+    projects = projects[:MAX_RECENT_PROJECTS]
+    _save_recent_projects(projects)
+
+
+@app.get("/projects/recent")
+async def get_recent_projects():
+    """Return the list of recently used project directories."""
+    return {"projects": _load_recent_projects()}
+
+
+@app.delete("/projects/recent")
+async def remove_recent_project(path: str = Query(default="")):
+    """Remove a project from the recent list and delete its RAG collection."""
+    if not path:
+        raise HTTPException(status_code=400, detail="path parameter is required")
+    projects = _load_recent_projects()
+    projects = [p for p in projects if p.get("path") != path]
+    _save_recent_projects(projects)
+
+    # Delete RAG collection for this project
+    deleted_chunks = 0
+    if rag_store:
+        deleted_chunks = rag_store.delete_project(path)
+        # If we deleted the current project, switch to home
+        if rag_store.project_path == str(Path.home()):
+            os.environ["PROJECT_ROOT"] = str(Path.home())
+
+    return {"status": "ok", "projects": projects, "rag_deleted": deleted_chunks}
 
 
 # ── Local Chat (Ollama + llama.cpp) ────────────────────────────────────────────

@@ -41,7 +41,7 @@ class MultiMCPClient:
         for client in self._clients:
             try:
                 await client.disconnect()
-            except Exception as exc:
+            except BaseException as exc:
                 logger.warning(
                     "[MultiMCP] error disconnecting %s: %s",
                     client.__class__.__name__,
@@ -68,3 +68,41 @@ class MultiMCPClient:
         if client is None:
             raise ValueError(f"No MCP client handles tool '{name}'")
         return await client.call_tool(name, arguments)
+
+    async def reconnect_client(self, old_client: Any, new_client: Any) -> None:
+        """Replace a sub-client: disconnect old, connect new, rebuild tool map.
+
+        Use this to switch the git client to a different project directory
+        without restarting the whole MCP stack.
+        """
+        # Disconnect the old client
+        try:
+            await old_client.disconnect()
+        except BaseException as exc:
+            logger.warning(
+                "[MultiMCP] error disconnecting %s during reconnect: %s",
+                old_client.__class__.__name__, exc,
+            )
+
+        # Replace in the client list
+        self._clients = [
+            new_client if c is old_client else c
+            for c in self._clients
+        ]
+
+        # Connect the new client
+        try:
+            await new_client.connect()
+            logger.info(
+                "[MultiMCP] %s reconnected — tools: %s",
+                new_client.__class__.__name__,
+                [t["function"]["name"] for t in new_client.tools],
+            )
+        except Exception as exc:
+            logger.warning(
+                "[MultiMCP] %s failed to reconnect: %s",
+                new_client.__class__.__name__, exc,
+            )
+
+        # Rebuild the tool dispatch map
+        self._build_tool_map()
