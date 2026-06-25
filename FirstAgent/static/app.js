@@ -106,6 +106,32 @@ const taskFsmStates    = document.querySelectorAll('.task-fsm-state');
 let currentLtCategory = 'profile';
 const WARNING_THRESHOLD = 0.8;
 
+// ── Code Review elements ────────────────────────────────────────────────────────
+let reviewMode = 'local';
+const reviewModeTabs       = document.querySelectorAll('.review-mode-tab');
+const reviewModePanels = {
+    local:  document.getElementById('review-mode-local'),
+    manual: document.getElementById('review-mode-manual'),
+};
+const reviewRunLocalBtn    = document.getElementById('review-run-local-btn');
+const reviewRunManualBtn   = document.getElementById('review-run-manual-btn');
+const reviewBaseBranch     = document.getElementById('review-base-branch');
+const reviewPrTitle        = document.getElementById('review-pr-title');
+const reviewPrDesc         = document.getElementById('review-pr-desc');
+const reviewDiffInput      = document.getElementById('review-diff-input');
+const reviewChangedFiles   = document.getElementById('review-changed-files');
+const reviewResult         = document.getElementById('review-result');
+const reviewLoading        = document.getElementById('review-loading');
+const reviewLoadingText    = document.getElementById('review-loading-text');
+const reviewError          = document.getElementById('review-error');
+const reviewOverall        = document.getElementById('review-overall');
+const reviewTotalCount     = document.getElementById('review-total-count');
+const reviewResultMeta     = document.getElementById('review-result-meta');
+const reviewStatusText     = document.getElementById('review-status-text');
+const reviewResultClose    = document.getElementById('review-result-close');
+const reviewRagDetails     = document.getElementById('review-rag-details');
+const reviewRagSources     = document.getElementById('review-rag-sources');
+
 // ── Message history (Up/Down arrow navigation) ────────────────────────────────
 const MAX_MESSAGE_HISTORY = 10;
 const MH_STORAGE_KEY = 'chat_message_history';
@@ -2163,4 +2189,278 @@ if (remoteTabBtn) {
             });
         }
     });
+
+    // ── Code Review ──────────────────────────────────────────────────────────
+
+    async function loadReviewStatus() {
+        try {
+            const res = await fetch('/review/status');
+            const data = await res.json();
+            if (data.available) {
+                const ragStatus = data.rag_available
+                    ? `${data.rag_chunks} RAG chunks`
+                    : 'no RAG context';
+                reviewStatusText.textContent = `✅ Review ready · ${data.model} · ${ragStatus}`;
+                reviewRunLocalBtn.disabled = false;
+                reviewRunManualBtn.disabled = false;
+
+                // Show current branch
+                const currentBranchEl = document.getElementById('review-current-branch');
+                if (currentBranchEl) {
+                    if (data.current_branch) {
+                        currentBranchEl.textContent = data.current_branch;
+                        currentBranchEl.title = `Current branch: ${data.current_branch}`;
+                    } else {
+                        currentBranchEl.textContent = '—';
+                        currentBranchEl.title = 'Current branch unknown';
+                    }
+                }
+
+                // Populate base branch dropdown
+                const branches = data.all_branches || [];
+                if (branches.length > 0) {
+                    const currentValue = reviewBaseBranch.value;
+                    reviewBaseBranch.innerHTML = '';
+                    branches.forEach(b => {
+                        const opt = document.createElement('option');
+                        opt.value = b;
+                        opt.textContent = b;
+                        reviewBaseBranch.appendChild(opt);
+                    });
+                    // Restore previous selection if still exists
+                    if (currentValue && branches.includes(currentValue)) {
+                        reviewBaseBranch.value = currentValue;
+                    }
+                }
+            } else {
+                reviewStatusText.textContent = `❌ Review unavailable${data.error ? ': ' + data.error : ''}`;
+                reviewRunLocalBtn.disabled = true;
+                reviewRunManualBtn.disabled = true;
+            }
+        } catch (e) {
+            reviewStatusText.textContent = '❌ Cannot reach review service';
+            reviewRunLocalBtn.disabled = true;
+            reviewRunManualBtn.disabled = true;
+        }
+    }
+
+    async function runLocalReview() {
+        const baseBranch = reviewBaseBranch.value.trim() || 'main';
+
+        setReviewLoading(true, 'Fetching diff from git MCP...');
+        hideReviewResult();
+        hideReviewError();
+
+        try {
+            const res = await fetch('/review/local', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ base_branch: baseBranch }),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || `HTTP ${res.status}`);
+            }
+            const data = await res.json();
+            renderReviewResult(data);
+        } catch (err) {
+            showReviewError(err.message);
+        } finally {
+            setReviewLoading(false);
+        }
+    }
+
+    async function runManualReview() {
+        const diffText = reviewDiffInput.value.trim();
+        if (!diffText) {
+            showReviewError('Please paste a git diff first.');
+            return;
+        }
+
+        const filesStr = reviewChangedFiles.value.trim();
+        const changedFiles = filesStr
+            ? filesStr.split(',').map(s => s.trim()).filter(Boolean)
+            : [];
+
+        setReviewLoading(true, 'Analyzing diff...');
+        hideReviewResult();
+        hideReviewError();
+
+        try {
+            const res = await fetch('/review/pr', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    pr_title: reviewPrTitle.value.trim(),
+                    pr_description: reviewPrDesc.value.trim(),
+                    diff_text: diffText,
+                    changed_files: changedFiles,
+                }),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || `HTTP ${res.status}`);
+            }
+            const data = await res.json();
+            renderReviewResult(data);
+        } catch (err) {
+            showReviewError(err.message);
+        } finally {
+            setReviewLoading(false);
+        }
+    }
+
+    function renderReviewResult(data) {
+        const r = data.result || {};
+        const s = r.summary || {};
+
+        reviewOverall.textContent = `📋 ${s.overall_assessment || 'Review complete'}`;
+        reviewTotalCount.textContent = `${s.total_issues || 0} issues found`;
+
+        const model = r.model_used || '?';
+        const elapsed = data.elapsed_ms || r.elapsed_ms || 0;
+        const elapsedSec = (elapsed / 1000).toFixed(1);
+        reviewResultMeta.textContent = `${model} · ${elapsedSec}s`;
+
+        // Категории — ключ результата → ключ DOM
+        const categories = [
+            { key: 'bugs',                   domKey: 'bugs' },
+            { key: 'architecture_issues',    domKey: 'architecture' },
+            { key: 'security_issues',        domKey: 'security' },
+            { key: 'performance_issues',     domKey: 'performance' },
+            { key: 'recommendations',        domKey: 'recommendations' },
+        ];
+
+        categories.forEach(cat => {
+            const items = r[cat.key] || [];
+            const countEl = document.getElementById(`review-cat-${cat.domKey}-count`);
+            const bodyEl  = document.getElementById(`review-cat-${cat.domKey}`);
+            const headerEl = bodyEl ? bodyEl.closest('.review-cat')?.querySelector('.review-cat-header') : null;
+
+            if (!countEl || !bodyEl) return;
+
+            countEl.textContent = items.length;
+            bodyEl.innerHTML = '';
+
+            if (items.length === 0) {
+                bodyEl.innerHTML = '<div class="review-cat-empty">No issues found</div>';
+                if (headerEl) headerEl.classList.remove('has-issues');
+            } else {
+                if (headerEl) headerEl.classList.add('has-issues');
+                bodyEl.style.display = 'none';  // свёрнуто по умолчанию
+
+                items.forEach(issue => {
+                    const sev = issue.severity || 'minor';
+                    const sevClass = `review-sev-${sev}`;
+                    const sevIcon = sev === 'critical' ? '🔴' : sev === 'major' ? '🟡' : '🟢';
+                    const loc = issue.file_path ? `<span class="review-issue-file">${escHtml(issue.file_path)}</span>` : '';
+                    const line = issue.line_number != null ? `<span class="review-issue-line">:${issue.line_number}</span>` : '';
+
+                    const el = document.createElement('div');
+                    el.className = 'review-issue';
+                    el.innerHTML =
+                        `<div class="review-issue-head">
+                            ${sevIcon} <span class="review-issue-sev ${sevClass}">${sev.toUpperCase()}</span>
+                            ${loc}${line}
+                        </div>
+                        <div class="review-issue-desc">${escHtml(issue.description)}</div>
+                        ${issue.suggestion ? `<div class="review-issue-suggestion">💡 ${escHtml(issue.suggestion)}</div>` : ''}`;
+                    bodyEl.appendChild(el);
+                });
+            }
+        });
+
+        // RAG sources
+        const ragSources = data.rag_sources || r.rag_sources || [];
+        if (ragSources.length > 0) {
+            reviewRagSources.innerHTML = ragSources.map(rs =>
+                `<div class="review-rag-source">
+                    <span class="rag-source-loc">${escHtml(rs.source || '')} ${rs.section ? '/ ' + escHtml(rs.section) : ''}</span>
+                    <span class="rag-source-score">${Math.round((rs.score || 0) * 100)}%</span>
+                </div>`
+            ).join('');
+            reviewRagDetails.hidden = false;
+        } else {
+            reviewRagDetails.hidden = true;
+        }
+
+        showReviewResult();
+    }
+
+    function setReviewLoading(loading, text) {
+        reviewLoading.style.display = loading ? '' : 'none';
+        if (loading && text) {
+            reviewLoadingText.textContent = text;
+        }
+        reviewRunLocalBtn.disabled = loading;
+        reviewRunManualBtn.disabled = loading;
+    }
+
+    function showReviewResult() {
+        reviewResult.style.display = '';
+        reviewError.style.display = 'none';
+    }
+
+    function hideReviewResult() {
+        reviewResult.style.display = 'none';
+    }
+
+    function showReviewError(msg) {
+        reviewError.style.display = '';
+        reviewError.textContent = `❌ ${msg}`;
+        reviewResult.style.display = 'none';
+    }
+
+    function hideReviewError() {
+        reviewError.style.display = 'none';
+        reviewError.textContent = '';
+    }
+
+    // ── Mode tabs ──
+    reviewModeTabs.forEach(btn => {
+        btn.addEventListener('click', () => {
+            reviewModeTabs.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            reviewMode = btn.dataset.mode;
+            Object.values(reviewModePanels).forEach(p => p.classList.remove('active'));
+            const panel = reviewModePanels[reviewMode];
+            if (panel) panel.classList.add('active');
+            hideReviewResult();
+            hideReviewError();
+        });
+    });
+
+    // ── Event bindings ──
+    reviewRunLocalBtn.addEventListener('click', runLocalReview);
+    reviewRunManualBtn.addEventListener('click', runManualReview);
+    reviewResultClose.addEventListener('click', hideReviewResult);
+
+    // Ctrl+Enter shortcut for diff textarea
+    reviewDiffInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            runManualReview();
+        }
+    });
+
+    // ── Category toggle ──
+    document.addEventListener('click', e => {
+        const header = e.target.closest('.review-cat-header');
+        if (!header) return;
+        const body = header.parentElement.querySelector('.review-cat-body');
+        const toggle = header.querySelector('.review-cat-toggle');
+        if (body) {
+            const isOpen = body.style.display !== 'none';
+            body.style.display = isOpen ? 'none' : '';
+            if (toggle) toggle.textContent = isOpen ? '▸' : '▾';
+        }
+    });
+
+    // ── Tab activation hook ──
+    const reviewTabBtn = document.querySelector('.main-nav-tab[data-tab="review"]');
+    if (reviewTabBtn) {
+        reviewTabBtn.addEventListener('click', () => {
+            loadReviewStatus();
+        });
+    }
 }

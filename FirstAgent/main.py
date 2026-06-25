@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from agent import ChatAgent
+from code_review import CodeReviewAgent
 from config import load_system_prompt, save_system_prompt
 from diagram_pipeline import DiagramPipeline
 from invariants import InvariantStore
@@ -61,6 +62,7 @@ telegram_client: MCPTelegramClient | None = None
 telegram_chat_id: str = ""
 diagram_pipeline: DiagramPipeline | None = None
 rag_store: RAGStore | None = None
+review_agent: CodeReviewAgent | None = None
 control_questions: list[dict] = []
 
 
@@ -260,6 +262,21 @@ async def lifespan(app: FastAPI):
     if rag_store and rag_store.count() == 0:
         await _index_project_docs(rag_store)
 
+    # ── Code Review Agent ──────────────────────────────────────────────────────
+    global review_agent
+    try:
+        review_agent = CodeReviewAgent(
+            api_key=api_key,
+            deepseek_api_key=deepseek_api_key,
+            model=DEFAULT_MODEL,
+            rag_store=rag_store,
+            mcp_client=mcp_client,
+        )
+        print("CodeReviewAgent ready")
+    except Exception as e:
+        print(f"WARNING: CodeReviewAgent unavailable: {e}")
+        review_agent = None
+
     # ── Control questions ───────────────────────────────────────────────────
     global control_questions
     control_questions = _parse_control_questions("docs/горчев/контрольные вопросы.txt")
@@ -332,6 +349,29 @@ class TaskTransitionRequest(BaseModel):
 
 class TaskNextStepRequest(BaseModel):
     description: str = ""
+
+
+class PRReviewRequest(BaseModel):
+    pr_title: str = ""
+    pr_description: str = ""
+    base_branch: str = "main"
+    head_branch: str = ""
+    diff_text: str
+    changed_files: list[str] = []
+    user_id: str = "review"
+
+
+class PRReviewResponse(BaseModel):
+    result: dict
+    summary: dict
+    rag_sources: list[dict] = []
+    error: str | None = None
+    elapsed_ms: int = 0
+
+
+class LocalReviewRequest(BaseModel):
+    base_branch: str = "main"
+    user_id: str = "review"
 
 
 LongTermCategory = Literal["profile", "decisions", "knowledge"]
@@ -1676,6 +1716,98 @@ async def patch_invariant(inv_id: str, request: InvariantPatchRequest):
     if not item:
         raise HTTPException(status_code=404, detail=f"Invariant '{inv_id}' not found")
     return item
+
+
+# ── Code Review ────────────────────────────────────────────────────────────────
+
+@app.get("/review/status")
+async def review_status():
+    """Проверить доступность сервиса ревью кода."""
+    if not review_agent:
+        return {"available": False, "error": "CodeReviewAgent not initialized"}
+    git_available = mcp_client is not None
+    rag_available = rag_store is not None and rag_store.count() > 0
+
+    # Get current branch name and all branches
+    current_branch = None
+    all_branches = []
+    if mcp_client:
+        try:
+            branch_json = await mcp_client.call_tool("get_git_branch", {})
+            branch_data = json.loads(branch_json)
+            current_branch = branch_data.get("current_branch")
+            all_branches = branch_data.get("all_branches", [])
+        except Exception:
+            pass
+
+    return {
+        "available": True,
+        "git_available": git_available,
+        "rag_available": rag_available,
+        "rag_chunks": rag_store.count() if rag_store else 0,
+        "model": review_agent.model,
+        "current_branch": current_branch,
+        "all_branches": all_branches,
+    }
+
+
+@app.post("/review/pr", response_model=PRReviewResponse)
+async def review_pr(request: PRReviewRequest):
+    """Ревью PR по переданному diff с использованием RAG-контекста."""
+    if not review_agent:
+        raise HTTPException(status_code=503, detail="Code review agent unavailable")
+    if not request.diff_text.strip():
+        raise HTTPException(status_code=400, detail="diff_text is required")
+
+    t0 = time.monotonic()
+    try:
+        result = await review_agent.review_pr(
+            pr_title=request.pr_title,
+            pr_description=request.pr_description,
+            base_branch=request.base_branch,
+            head_branch=request.head_branch,
+            diff_text=request.diff_text,
+            changed_files=request.changed_files,
+            user_id=request.user_id,
+        )
+    except Exception as e:
+        logger.exception("Code review failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    elapsed_ms = round((time.monotonic() - t0) * 1000)
+
+    return PRReviewResponse(
+        result=result.to_dict(),
+        summary=result.summary,
+        rag_sources=result.rag_sources,
+        error=result.error,
+        elapsed_ms=result.elapsed_ms,
+    )
+
+
+@app.post("/review/local", response_model=PRReviewResponse)
+async def review_local(request: LocalReviewRequest):
+    """Ревью текущего рабочего дерева через MCP-инструменты git."""
+    if not review_agent:
+        raise HTTPException(status_code=503, detail="Code review agent unavailable")
+
+    t0 = time.monotonic()
+    try:
+        result = await review_agent.review_current_branch(
+            base_branch=request.base_branch,
+            user_id=request.user_id,
+        )
+    except Exception as e:
+        logger.exception("Local code review failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return PRReviewResponse(
+        result=result.to_dict(),
+        summary=result.summary,
+        rag_sources=result.rag_sources,
+        error=result.error,
+        elapsed_ms=result.elapsed_ms,
+    )
 
 
 # ── RAG ───────────────────────────────────────────────────────────────────────

@@ -16,6 +16,7 @@
                 <button class="main-nav-tab" data-tab="local">Local LLM</button>
                 <button class="main-nav-tab" data-tab="remote">Remote LLM</button>
                 <button class="main-nav-tab" data-tab="rag">RAG</button>
+                <button class="main-nav-tab" data-tab="review">Code Review</button>
             </div>
         </nav>
 
@@ -426,6 +427,144 @@
                     <div id="rag-query-result" class="rag-query-result" hidden></div>
                 </div>
 
+            </div>
+        </div>
+
+        <!-- ══ Code Review tab ══ -->
+        <div class="main-tab-panel" id="tab-review">
+            <div class="review-page">
+
+                <!-- ── Review controls ── -->
+                <div class="review-controls">
+
+                    <!-- Mode toggle -->
+                    <div class="review-mode-tabs">
+                        <button class="review-mode-tab active" data-mode="local">Current Branch</button>
+                        <button class="review-mode-tab" data-mode="manual">Manual Diff</button>
+                    </div>
+
+                    <!-- Local mode -->
+                    <div class="review-mode-panel active" id="review-mode-local">
+                        <div class="review-local-row">
+                            <label class="review-label">Base branch</label>
+                            <select id="review-base-branch" class="review-select-branch">
+                                <option value="main">main</option>
+                            </select>
+                            <span class="review-current-branch" id="review-current-branch" title="Current branch">—</span>
+                            <button id="review-run-local-btn" class="review-btn review-btn-primary">Run Review</button>
+                        </div>
+                        <div class="review-info-row">
+                            <span>Uses git MCP to gather diff and changed files from working tree.</span>
+                        </div>
+                    </div>
+
+                    <!-- Manual mode -->
+                    <div class="review-mode-panel" id="review-mode-manual">
+                        <div class="review-manual-row">
+                            <label class="review-label">PR Title</label>
+                            <input type="text" id="review-pr-title" class="review-input" placeholder="Optional PR title" spellcheck="false">
+                        </div>
+                        <div class="review-manual-row">
+                            <label class="review-label">PR Description</label>
+                            <textarea id="review-pr-desc" class="review-textarea" rows="2" placeholder="Optional PR description"></textarea>
+                        </div>
+                        <div class="review-manual-row">
+                            <label class="review-label">Diff</label>
+                            <textarea id="review-diff-input" class="review-diff-textarea" rows="8"
+                                      placeholder="Paste git diff here... (Ctrl+Enter to run)"></textarea>
+                        </div>
+                        <div class="review-manual-row">
+                            <label class="review-label">Changed files</label>
+                            <input type="text" id="review-changed-files" class="review-input"
+                                   placeholder="file1.py, file2.py, ...">
+                        </div>
+                        <button id="review-run-manual-btn" class="review-btn review-btn-primary">Run Review</button>
+                    </div>
+                </div>
+
+                <!-- ── Loading ── -->
+                <div id="review-loading" class="review-loading" hidden>
+                    <div class="review-loading-spinner"></div>
+                    <span id="review-loading-text">Analyzing code...</span>
+                </div>
+
+                <!-- ── Result ── -->
+                <div id="review-result" class="review-result" hidden>
+                    <div class="review-result-header">
+                        <span class="review-result-title" id="review-result-title">Review Results</span>
+                        <span class="review-result-meta" id="review-result-meta"></span>
+                        <button class="review-result-close" id="review-result-close">×</button>
+                    </div>
+
+                    <!-- Summary -->
+                    <div class="review-summary-bar" id="review-summary-bar">
+                        <span class="review-summary-overall" id="review-overall"></span>
+                        <span class="review-summary-count" id="review-total-count"></span>
+                    </div>
+
+                    <!-- Categories -->
+                    <div class="review-categories" id="review-categories">
+                        <div class="review-cat" data-cat="bugs">
+                            <div class="review-cat-header">
+                                <span class="review-cat-icon">🐛</span>
+                                <span class="review-cat-label">Bugs</span>
+                                <span class="review-cat-count" id="review-cat-bugs-count">0</span>
+                                <span class="review-cat-toggle">▸</span>
+                            </div>
+                            <div class="review-cat-body" id="review-cat-bugs"></div>
+                        </div>
+                        <div class="review-cat" data-cat="architecture">
+                            <div class="review-cat-header">
+                                <span class="review-cat-icon">🏗️</span>
+                                <span class="review-cat-label">Architecture</span>
+                                <span class="review-cat-count" id="review-cat-architecture-count">0</span>
+                                <span class="review-cat-toggle">▸</span>
+                            </div>
+                            <div class="review-cat-body" id="review-cat-architecture"></div>
+                        </div>
+                        <div class="review-cat" data-cat="security">
+                            <div class="review-cat-header">
+                                <span class="review-cat-icon">🔒</span>
+                                <span class="review-cat-label">Security</span>
+                                <span class="review-cat-count" id="review-cat-security-count">0</span>
+                                <span class="review-cat-toggle">▸</span>
+                            </div>
+                            <div class="review-cat-body" id="review-cat-security"></div>
+                        </div>
+                        <div class="review-cat" data-cat="performance">
+                            <div class="review-cat-header">
+                                <span class="review-cat-icon">⚡</span>
+                                <span class="review-cat-label">Performance</span>
+                                <span class="review-cat-count" id="review-cat-performance-count">0</span>
+                                <span class="review-cat-toggle">▸</span>
+                            </div>
+                            <div class="review-cat-body" id="review-cat-performance"></div>
+                        </div>
+                        <div class="review-cat" data-cat="recommendations">
+                            <div class="review-cat-header">
+                                <span class="review-cat-icon">💡</span>
+                                <span class="review-cat-label">Recommendations</span>
+                                <span class="review-cat-count" id="review-cat-recommendations-count">0</span>
+                                <span class="review-cat-toggle">▸</span>
+                            </div>
+                            <div class="review-cat-body" id="review-cat-recommendations"></div>
+                        </div>
+                    </div>
+
+                    <!-- RAG sources -->
+                    <details class="review-rag-details" id="review-rag-details" hidden>
+                        <summary>RAG Sources</summary>
+                        <div class="review-rag-sources" id="review-rag-sources"></div>
+                    </details>
+                </div>
+
+                <!-- ── Error ── -->
+                <div id="review-error" class="review-error" hidden></div>
+
+                <!-- ── Status bar ── -->
+                <div class="review-status-bar" id="review-status-bar">
+                    <span id="review-status-text">Checking review availability...</span>
+                </div>
             </div>
         </div>
 

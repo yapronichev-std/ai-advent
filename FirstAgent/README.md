@@ -1287,10 +1287,81 @@ curl -N http://localhost:8000/chat/remote?user_id=test \
 
 ---
 
+### Day 32 — Вкладка Code Review: ревью кода через LLM + GitHub Actions
+
+Добавлена вкладка «Code Review» для автоматического ревью кода с использованием LLM и RAG-контекста проекта. Два режима: ревью текущей ветки (через git MCP) и ревью по вставленному diff.
+
+#### Новые файлы
+
+| Файл | Назначение |
+|---|---|
+| `code_review.py` | `CodeReviewAgent` — агент ревью кода: собирает diff через MCP, обогащает RAG-контекстом, вызывает LLM, парсит ответ |
+| `.github/workflows/pr-review.yml` | GitHub Actions workflow — авто-ревью при открытии/обновлении PR, результат публикуется комментарием |
+
+#### Изменённые файлы
+
+- **`main.py`** — инициализация `CodeReviewAgent` в lifespan; три новых эндпоинта:
+  - `GET /review/status` — проверка доступности (модель, git, RAG, текущая ветка, список всех веток)
+  - `POST /review/pr` — ревью переданного diff (PR)
+  - `POST /review/local` — ревью текущего рабочего дерева (diff через git MCP)
+- **`static/index.html`** — новая вкладка `#tab-review`:
+  - Переключатель режимов: Current Branch / Manual Diff
+  - Выпадающий список base branch (заполняется из git) + бейдж текущей ветки
+  - Поле ввода diff + changed files для Manual режима
+  - Панель результатов: сводка, категории (Bugs, Architecture, Security, Performance, Recommendations)
+  - Каждая категория сворачивается/разворачивается, issues с severity и файлами
+  - Блок RAG Sources
+- **`static/app.js`** — логика вкладки Code Review:
+  - `loadReviewStatus()` — проверка доступности, заполнение списка веток, отображение текущей ветки
+  - `runLocalReview()` — ревью текущей ветки через `POST /review/local`
+  - `runManualReview()` — ревью diff через `POST /review/pr`
+  - `renderReviewResult()` — отрисовка результатов по категориям
+  - `Ctrl+Enter` в diff-поле для быстрого запуска
+- **`static/style.css`** — стили `.review-page`, `.review-mode-tabs`, `.review-select-branch`, `.review-current-branch`, `.review-result`, категорий, severity-бейджей, `.review-categories` со скроллом
+
+#### UX фичи
+
+- **Выпадающий список base branch** — автоматически заполняется из git, можно выбрать любую локальную ветку
+- **Бейдж текущей ветки** — отображается рядом с base branch (например, `day32`)
+- **Скроллируемые категории** — при раскрытии категорий с большим количеством issues панель корректно скроллится
+- **GitHub Actions** — при PR автоматически запускается ревью через локальный API, результат публикуется комментарием
+
+#### API эндпоинты
+
+```bash
+# Статус
+curl http://localhost:8000/review/status
+# → {"available": true, "current_branch": "day32", "all_branches": ["main", "day32"], ...}
+
+# Ревью текущей ветки
+curl -X POST http://localhost:8000/review/local \
+  -H "Content-Type: application/json" \
+  -d '{"base_branch": "main"}'
+
+# Ревью PR diff
+curl -X POST http://localhost:8000/review/pr \
+  -H "Content-Type: application/json" \
+  -d '{"pr_title": "My PR", "diff_text": "...", "changed_files": ["main.py"]}'
+```
+
+#### GitHub Actions Workflow
+
+Workflow `.github/workflows/pr-review.yml` запускается на events `pull_request: [opened, synchronize]`:
+
+1. Checkout репозитория (`fetch-depth: 0` для истории)
+2. `git diff origin/<base>...HEAD` — получение diff PR
+3. `curl POST /review/pr` — вызов локального API ревью
+4. `actions/github-script` — публикация результата как PR-комментарий с форматированием по категориям
+
+Требует `runs-on: self-hosted` (раннер на той же машине, где запущен FirstAgent).
+
+---
+
 ### Предыдущие доработки
 
 | День | Фича |
 |---|---|
+| Day 32 | Вкладка Code Review: ревью через LLM, выпадающий список веток, GitHub Actions авто-ревью |
 | Day 31 | Ассистент разработчика: RAG по документации, MCP git, /help, переключение проектов |
 | Day 30 | Вкладка Remote LLM: SSE-стриминг, fallback reasoning_content, кнопка Stop, модель Qwen2.5-1.5B (6.5× быстрее) |
 | Day 29 | Поддержка HTML и MHTML в RAG-системе |
