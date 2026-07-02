@@ -131,7 +131,7 @@ async def list_tools() -> list[types.Tool]:
                 "Return the git diff of current changes. By default returns "
                 "unstaged diff. Set staged=true to get staged diff, or "
                 "staged=false and path=<file> to diff a specific file."
-            ),
+            ),  
             inputSchema={
                 "type": "object",
                 "properties": {
