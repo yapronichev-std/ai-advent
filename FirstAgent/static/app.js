@@ -63,14 +63,6 @@ const syspromptStatus  = document.getElementById('sysprompt-status');
 // ── Model selector ──────────────────────────────────────────────────────────
 const modelSelect      = document.getElementById('model-select');
 
-// ── User selector elements ─────────────────────────────────────────────────
-const userSelect       = document.getElementById('user-select');
-const userAddBtn       = document.getElementById('user-add-btn');
-const userDelBtn       = document.getElementById('user-del-btn');
-const userNewRow       = document.getElementById('user-new-row');
-const userNewInput     = document.getElementById('user-new-input');
-const userNewConfirm   = document.getElementById('user-new-confirm');
-const userNewCancel    = document.getElementById('user-new-cancel');
 
 // ── Project bar elements ────────────────────────────────────────────────────
 const projectBar       = document.getElementById('project-bar');
@@ -102,6 +94,16 @@ const memTabs          = document.querySelectorAll('.mem-tab');
 const taskFsmBar       = document.getElementById('task-fsm-bar');
 const taskFsmMeta      = document.getElementById('task-fsm-meta');
 const taskFsmStates    = document.querySelectorAll('.task-fsm-state');
+
+// ── Users panel elements ───────────────────────────────────────────────────
+const usersPanel       = document.getElementById('users-panel');
+const usersList        = document.getElementById('users-list');
+const usersAddBtn      = document.getElementById('users-add-btn');
+const usersAddRow      = document.getElementById('users-add-row');
+const usersAddInput    = document.getElementById('users-add-input');
+const usersAddConfirm  = document.getElementById('users-add-confirm');
+const usersAddCancel   = document.getElementById('users-add-cancel');
+const usersPanelToggle = document.getElementById('users-panel-toggle');
 
 let currentLtCategory = 'profile';
 const WARNING_THRESHOLD = 0.8;
@@ -355,23 +357,53 @@ async function loadUsers() {
         if (!res.ok) return;
         const { users } = await res.json();
 
-        userSelect.innerHTML = '';
+        usersList.innerHTML = '';
         const all = users.includes('default') ? users : ['default', ...users];
-        all.forEach(uid => {
-            const opt = document.createElement('option');
-            opt.value = uid;
-            opt.textContent = uid;
-            if (uid === currentUserId) opt.selected = true;
-            userSelect.appendChild(opt);
+
+        // Ensure current user exists in list
+        const finalList = all.includes(currentUserId) ? all : [...all, currentUserId];
+
+        finalList.forEach(uid => {
+            const item = document.createElement('div');
+            item.className = 'users-list-item';
+            if (uid === currentUserId) item.classList.add('active');
+            item.dataset.uid = uid;
+
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'users-list-name';
+            nameSpan.textContent = uid;
+
+            const delBtn = document.createElement('button');
+            delBtn.className = 'users-list-del';
+            delBtn.title = 'Delete user';
+            delBtn.textContent = '×';
+            if (uid === 'default') delBtn.hidden = true;
+
+            item.appendChild(nameSpan);
+            item.appendChild(delBtn);
+
+            // Click user to switch
+            item.addEventListener('click', (e) => {
+                if (e.target === delBtn) return;
+                if (uid !== currentUserId) switchUser(uid);
+            });
+
+            // Delete user
+            delBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                if (!confirm(`Delete user "${uid}" and all their data?`)) return;
+                await fetch(`/users/${encodeURIComponent(uid)}`, { method: 'DELETE' });
+                if (uid === currentUserId) {
+                    currentUserId = 'default';
+                    await loadUsers();
+                    await switchUser('default');
+                } else {
+                    await loadUsers();
+                }
+            });
+
+            usersList.appendChild(item);
         });
-        // Ensure current user exists in list (edge case after creation)
-        if (!all.includes(currentUserId)) {
-            const opt = document.createElement('option');
-            opt.value = currentUserId;
-            opt.textContent = currentUserId;
-            opt.selected = true;
-            userSelect.appendChild(opt);
-        }
     } catch (_) {}
 }
 
@@ -379,44 +411,44 @@ async function switchUser(uid) {
     currentUserId = uid;
     messagesEl.innerHTML = '<div class="empty-state">Start a conversation...</div>';
     await Promise.all([loadModels(), loadTokenStats(), loadMemory(), loadShortTerm()]);
+    // Update active state in users list
+    usersList.querySelectorAll('.users-list-item').forEach(el => {
+        el.classList.toggle('active', el.dataset.uid === uid);
+    });
 }
 
-userSelect.addEventListener('change', () => switchUser(userSelect.value));
+// ── Users panel event handlers ──────────────────────────────────────────────
 
-userAddBtn.addEventListener('click', () => {
-    userNewRow.hidden = false;
-    userNewInput.focus();
+// Collapse/expand toggle
+usersPanelToggle.addEventListener('click', () => {
+    usersPanel.classList.toggle('collapsed');
 });
 
-userNewCancel.addEventListener('click', () => {
-    userNewRow.hidden = true;
-    userNewInput.value = '';
+// Show add user form
+usersAddBtn.addEventListener('click', () => {
+    usersAddRow.hidden = false;
+    usersAddInput.focus();
 });
 
+// Cancel add
+usersAddCancel.addEventListener('click', () => {
+    usersAddRow.hidden = true;
+    usersAddInput.value = '';
+});
+
+// Create user
 async function createUser() {
-    const uid = userNewInput.value.trim().replace(/\s+/g, '_');
+    const uid = usersAddInput.value.trim().replace(/\s+/g, '_');
     if (!uid) return;
-    userNewRow.hidden = true;
-    userNewInput.value = '';
+    usersAddRow.hidden = true;
+    usersAddInput.value = '';
     currentUserId = uid;
     await loadUsers();
     await switchUser(uid);
 }
 
-userNewConfirm.addEventListener('click', createUser);
-userNewInput.addEventListener('keydown', e => { if (e.key === 'Enter') createUser(); });
-
-userDelBtn.addEventListener('click', async () => {
-    if (currentUserId === 'default') {
-        alert('Cannot delete the default user.');
-        return;
-    }
-    if (!confirm(`Delete user "${currentUserId}" and all their data?`)) return;
-    await fetch(`/users/${encodeURIComponent(currentUserId)}`, { method: 'DELETE' });
-    currentUserId = 'default';
-    await loadUsers();
-    await switchUser('default');
-});
+usersAddConfirm.addEventListener('click', createUser);
+usersAddInput.addEventListener('keydown', e => { if (e.key === 'Enter') createUser(); });
 
 // ── Model selection ────────────────────────────────────────────────────────
 

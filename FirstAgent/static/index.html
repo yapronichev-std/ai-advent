@@ -40,19 +40,8 @@
                             <span class="user-label">Model</span>
                             <select id="model-select"></select>
                         </div>
-                        <div class="user-bar">
-                            <span class="user-label">User</span>
-                            <select id="user-select"></select>
-                            <button id="user-add-btn" title="New user">+</button>
-                            <button id="user-del-btn" title="Delete user">×</button>
-                        </div>
                         <button id="clear-btn" title="Clear history">Clear</button>
                     </header>
-                    <div class="user-new-row" id="user-new-row" hidden>
-                        <input id="user-new-input" placeholder="Enter user id…" autocomplete="off">
-                        <button id="user-new-confirm">Create</button>
-                        <button id="user-new-cancel">Cancel</button>
-                    </div>
 
                     <div class="token-panel" id="token-panel">
                         <div class="token-panel-row">
@@ -114,8 +103,28 @@
                     </form>
                 </div>
 
-                <!-- ── Memory panel ── -->
-                <div class="memory-panel" id="memory-panel">
+                <!-- ── Right sidebar (Users + Memory) ── -->
+                <aside class="right-sidebar" id="right-sidebar">
+
+                    <!-- ── Users panel ── -->
+                    <div class="users-panel" id="users-panel">
+                        <div class="users-panel-header">
+                            <span class="users-panel-title">Users</span>
+                            <span class="users-panel-toggle" id="users-panel-toggle">▾</span>
+                            <button id="users-add-btn" class="users-header-btn" title="Add user">+</button>
+                        </div>
+                        <div class="users-panel-body" id="users-panel-body">
+                            <div class="users-list" id="users-list"></div>
+                            <div class="users-add-row" id="users-add-row" hidden>
+                                <input id="users-add-input" class="users-add-input" placeholder="user id…" autocomplete="off">
+                                <button id="users-add-confirm" class="users-add-confirm">Add</button>
+                                <button id="users-add-cancel" class="users-add-cancel">Cancel</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ── Memory panel ── -->
+                    <div class="memory-panel" id="memory-panel">
                     <div class="mem-header">
                         <span class="mem-title">Memory</span>
                         <button id="refresh-memory-btn" title="Refresh memory">↻</button>
@@ -201,6 +210,8 @@
                         </div>
                     </div>
                 </div>
+
+                </aside>
 
             </div>
         </div>
