@@ -40,6 +40,10 @@ document.querySelectorAll('.main-nav-tab').forEach(btn => {
             }
             loadRemoteHistory();
         }
+        if (tab === 'support') {
+            loadSupportUsers();
+            loadSupportStatus();
+        }
     });
 });
 
@@ -2494,5 +2498,412 @@ if (remoteTabBtn) {
         reviewTabBtn.addEventListener('click', () => {
             loadReviewStatus();
         });
+    }
+}
+
+// ── Support Tab ───────────────────────────────────────────────────────────────
+
+let supportSelectedUserId = null;
+let supportSelectedUser = null;
+let supportSelectedTicketId = null;
+let supportHistory = [];
+
+const supportUserSelect   = document.getElementById('support-user-select');
+const supportUserRefreshBtn = document.getElementById('support-user-refresh-btn');
+const supportUserCard      = document.getElementById('support-user-card');
+const supportNoUser        = document.getElementById('support-no-user');
+const supportUserName      = document.getElementById('support-user-name');
+const supportUserMeta      = document.getElementById('support-user-meta');
+const supportUserTickets   = document.getElementById('support-user-tickets');
+const supportContextBadge  = document.getElementById('support-context-badge');
+const supportStatusBar     = document.getElementById('support-status-bar');
+const supportMessages      = document.getElementById('support-messages');
+const supportForm          = document.getElementById('support-chat-form');
+const supportInput         = document.getElementById('support-input');
+const supportSendBtn       = document.getElementById('support-send-btn');
+const supportClearBtn      = document.getElementById('support-clear-btn');
+
+// ── Load users into dropdown ──────────────────────────────────────────────
+
+supportUserSelect.addEventListener('change', () => {
+    const userId = supportUserSelect.value;
+    if (userId) {
+        supportSelectedTicketId = null;
+        selectSupportUser(userId);
+    } else {
+        supportUserCard.hidden = true;
+        supportNoUser.hidden = false;
+        supportContextBadge.hidden = true;
+        supportSelectedUserId = null;
+        supportSelectedTicketId = null;
+    }
+});
+
+supportUserRefreshBtn.addEventListener('click', loadSupportUsers);
+
+async function loadSupportUsers() {
+    try {
+        // Empty query returns all users
+        const resp = await fetch('/support/users/search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: '' }),
+        });
+        const data = await resp.json();
+
+        const currentVal = supportUserSelect.value;
+        supportUserSelect.innerHTML = '<option value="">— выберите пользователя —</option>';
+
+        for (const u of (data.results || [])) {
+            const opt = document.createElement('option');
+            opt.value = u.id;
+            opt.textContent = `${u.name} (${u.email || u.id})`;
+            if (u.id === currentVal) opt.selected = true;
+            supportUserSelect.appendChild(opt);
+        }
+    } catch (e) {
+        console.error('loadSupportUsers:', e);
+    }
+}
+
+// ── Select user ───────────────────────────────────────────────────────────
+
+async function selectSupportUser(userId) {
+    supportSelectedUserId = userId;
+    supportSelectedUser = null;
+
+    // Fetch user + tickets
+    try {
+        const [userResp, ticketsResp] = await Promise.all([
+            fetch(`/support/users/${userId}`),
+            fetch(`/support/users/${userId}/tickets`),
+        ]);
+        const userData = await userResp.json();
+        const ticketsData = await ticketsResp.json();
+
+        supportSelectedUser = userData.user;
+        supportUserCard.hidden = false;
+        supportNoUser.hidden = true;
+
+        const u = supportSelectedUser;
+        supportUserName.textContent = u.name;
+        supportUserMeta.innerHTML = [
+            `${escapeHtml(u.email)}`,
+            `Тариф: ${escapeHtml(u.plan)}`,
+            `Статус: ${escapeHtml(u.status)}`,
+            `Компания: ${escapeHtml(u.company || '—')}`,
+            `Теги: ${u.tags.length ? u.tags.join(', ') : '—'}`,
+        ].join('<br>');
+
+        const tickets = ticketsData.tickets || [];
+        const active = tickets.filter(t => t.status === 'open' || t.status === 'in_progress');
+        const closed = tickets.filter(t => t.status === 'closed' || t.status === 'resolved');
+
+        const statusLabels = { open: 'открыт', in_progress: 'в работе', resolved: 'решён', closed: 'закрыт' };
+
+        let html = '';
+        if (active.length > 0) {
+            html += '<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">Активные</div>';
+            html += active.map(t => `
+                <div class="support-user-ticket-item" data-ticket-id="${escapeHtml(t.id)}">
+                    <span class="support-ticket-status ${t.status}">${statusLabels[t.status] || t.status}</span>
+                    ${escapeHtml(t.subject)}
+                </div>
+            `).join('');
+        }
+        if (closed.length > 0) {
+            html += '<div style="font-size:11px;color:#6b7280;margin:8px 0 4px;">Закрытые</div>';
+            html += closed.map(t => `
+                <div class="support-user-ticket-item" data-ticket-id="${escapeHtml(t.id)}" style="opacity:0.6;">
+                    <span class="support-ticket-status ${t.status}">${statusLabels[t.status] || t.status}</span>
+                    ${escapeHtml(t.subject)}
+                </div>
+            `).join('');
+        }
+        supportUserTickets.innerHTML = html || '<div style="font-size:11px;color:#9ca3af;">Нет тикетов</div>';
+
+        // Clickable tickets — select/deselect
+        const attachTicketClicks = () => {
+            supportUserTickets.querySelectorAll('.support-user-ticket-item').forEach(el => {
+                el.addEventListener('click', () => {
+                    const tid = el.dataset.ticketId;
+                    if (supportSelectedTicketId === tid) {
+                        supportSelectedTicketId = null;
+                        supportContextBadge.textContent = `${u.name} · ${tickets.length} тикетов`;
+                    } else {
+                        supportSelectedTicketId = tid;
+                        supportContextBadge.textContent = `${u.name} · ${tid}`;
+                    }
+                    supportContextBadge.hidden = false;
+                    supportInput.focus();
+                    // Refresh to update highlighting
+                    refreshUserTickets(userId);
+                });
+            });
+            // Restore highlight on previously selected ticket
+            if (supportSelectedTicketId) {
+                const selected = supportUserTickets.querySelector(`[data-ticket-id="${supportSelectedTicketId}"]`);
+                if (selected) selected.classList.add('selected');
+            }
+        };
+        attachTicketClicks();
+
+        supportContextBadge.hidden = false;
+        if (supportSelectedTicketId) {
+            supportContextBadge.textContent = `${u.name} · ${supportSelectedTicketId}`;
+        } else {
+            supportContextBadge.textContent = `${u.name} · ${tickets.length} тикетов`;
+        }
+    } catch (e) {
+        supportStatusBar.innerHTML = `<span style="color:#ef4444;">Ошибка: ${escapeHtml(e.message)}</span>`;
+    }
+}
+
+// ── Refresh tickets only (lightweight, no profile reload) ────────────────
+
+async function refreshUserTickets(userId) {
+    try {
+        const resp = await fetch(`/support/users/${userId}/tickets`);
+        const ticketsData = await resp.json();
+        const tickets = ticketsData.tickets || [];
+        const active = tickets.filter(t => t.status === 'open' || t.status === 'in_progress');
+        const closed = tickets.filter(t => t.status === 'closed' || t.status === 'resolved');
+        const statusLabels = { open: 'открыт', in_progress: 'в работе', resolved: 'решён', closed: 'закрыт' };
+
+        let html = '';
+        if (active.length > 0) {
+            html += '<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">Активные</div>';
+            html += active.map(t => `
+                <div class="support-user-ticket-item" data-ticket-id="${escapeHtml(t.id)}">
+                    <span class="support-ticket-status ${t.status}">${statusLabels[t.status] || t.status}</span>
+                    ${escapeHtml(t.subject)}
+                </div>
+            `).join('');
+        }
+        if (closed.length > 0) {
+            html += '<div style="font-size:11px;color:#6b7280;margin:8px 0 4px;">Закрытые</div>';
+            html += closed.map(t => `
+                <div class="support-user-ticket-item" data-ticket-id="${escapeHtml(t.id)}" style="opacity:0.6;">
+                    <span class="support-ticket-status ${t.status}">${statusLabels[t.status] || t.status}</span>
+                    ${escapeHtml(t.subject)}
+                </div>
+            `).join('');
+        }
+        supportUserTickets.innerHTML = html || '<div style="font-size:11px;color:#9ca3af;">Нет тикетов</div>';
+
+        // Re-attach click handlers
+        supportUserTickets.querySelectorAll('.support-user-ticket-item').forEach(el => {
+            el.addEventListener('click', () => {
+                const tid = el.dataset.ticketId;
+                if (supportSelectedTicketId === tid) {
+                    supportSelectedTicketId = null;
+                    el.classList.remove('selected');
+                    supportContextBadge.textContent = `${supportSelectedUser?.name || userId} · ${tickets.length} тикетов`;
+                } else {
+                    supportUserTickets.querySelectorAll('.support-user-ticket-item').forEach(e => e.classList.remove('selected'));
+                    supportSelectedTicketId = tid;
+                    el.classList.add('selected');
+                    supportContextBadge.textContent = `${supportSelectedUser?.name || userId} · ${tid}`;
+                }
+                supportContextBadge.hidden = false;
+                supportInput.focus();
+            });
+        });
+    } catch (e) {
+        // silently fail — ticket refresh is not critical
+    }
+}
+
+// ── Chat ──────────────────────────────────────────────────────────────────
+
+supportForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const question = supportInput.value.trim();
+    if (!question) return;
+
+    supportInput.value = '';
+    supportInput.disabled = true;
+    supportSendBtn.disabled = true;
+
+    // Add user message
+    appendSupportMessage('user', question);
+    // Show loading
+    const loadingEl = appendSupportMessage('loading', '');
+
+    try {
+        const resp = await fetch('/support/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                question,
+                user_identifier: supportSelectedUserId || '',
+                ticket_id: supportSelectedTicketId || '',
+                session_id: 'support_' + (supportSelectedUserId || 'default'),
+            }),
+        });
+        const data = await resp.json();
+
+        // Remove loading
+        loadingEl.remove();
+
+        if (data.error) {
+            appendSupportMessage('assistant', `❌ Ошибка: ${data.error}`);
+        } else {
+            appendSupportMessage('assistant', data.answer, {
+                ragSources: data.rag_sources,
+                userContext: data.user_context,
+                ticket: data.ticket,
+                elapsedMs: data.elapsed_ms,
+                ticketClosed: data.ticket_closed,
+            });
+            // Refresh ticket list after each message
+            if (supportSelectedUserId) {
+                refreshUserTickets(supportSelectedUserId);
+            }
+        }
+    } catch (err) {
+        loadingEl.remove();
+        appendSupportMessage('assistant', `❌ Ошибка сети: ${escapeHtml(err.message)}`);
+    }
+
+    supportInput.disabled = false;
+    supportSendBtn.disabled = false;
+    supportInput.focus();
+});
+
+supportClearBtn.addEventListener('click', () => {
+    supportHistory = [];
+    supportMessages.innerHTML = '<div class="empty-state">Выберите пользователя в панели слева и задайте вопрос...</div>';
+    supportContextBadge.hidden = true;
+});
+
+// ── Create ticket ─────────────────────────────────────────────────────────
+
+const supportTicketSubject  = document.getElementById('support-ticket-subject');
+const supportTicketDesc     = document.getElementById('support-ticket-desc');
+const supportTicketPriority = document.getElementById('support-ticket-priority');
+const supportTicketCategory = document.getElementById('support-ticket-category');
+const supportTicketCreateBtn = document.getElementById('support-ticket-create-btn');
+const supportTicketResult   = document.getElementById('support-ticket-result');
+
+supportTicketCreateBtn.addEventListener('click', async () => {
+    const subject = supportTicketSubject.value.trim();
+    const description = supportTicketDesc.value.trim();
+    if (!subject || !description) {
+        supportTicketResult.hidden = false;
+        supportTicketResult.className = 'support-ticket-result error';
+        supportTicketResult.textContent = 'Тема и описание обязательны';
+        return;
+    }
+    if (!supportSelectedUserId) {
+        supportTicketResult.hidden = false;
+        supportTicketResult.className = 'support-ticket-result error';
+        supportTicketResult.textContent = 'Сначала выберите пользователя (поиск слева)';
+        return;
+    }
+
+    supportTicketCreateBtn.disabled = true;
+    supportTicketCreateBtn.textContent = '...';
+
+    try {
+        const resp = await fetch('/support/tickets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                user_id: supportSelectedUserId,
+                subject,
+                description,
+                priority: supportTicketPriority.value,
+                category: supportTicketCategory.value,
+            }),
+        });
+        const data = await resp.json();
+        if (resp.ok && data.ticket) {
+            supportTicketResult.hidden = false;
+            supportTicketResult.className = 'support-ticket-result success';
+            supportTicketResult.textContent = `✅ Тикет ${data.ticket.id} создан`;
+            // Clear form
+            supportTicketSubject.value = '';
+            supportTicketSubject.value = '';
+            supportTicketDesc.value = '';
+            // Auto-select new ticket and refresh
+            supportSelectedTicketId = data.ticket.id;
+            if (supportSelectedUserId) selectSupportUser(supportSelectedUserId);
+        } else {
+            throw new Error(data.error || data.detail || 'Unknown error');
+        }
+    } catch (e) {
+        supportTicketResult.hidden = false;
+        supportTicketResult.className = 'support-ticket-result error';
+        supportTicketResult.textContent = `❌ ${escapeHtml(e.message)}`;
+    }
+
+    supportTicketCreateBtn.disabled = false;
+    supportTicketCreateBtn.textContent = 'Создать';
+});
+
+function appendSupportMessage(role, text, meta = {}) {
+    // Remove empty-state
+    const empty = supportMessages.querySelector('.empty-state');
+    if (empty) empty.remove();
+
+    if (role === 'loading') {
+        const div = document.createElement('div');
+        div.className = 'support-loading';
+        div.innerHTML = '<div class="support-loading-spinner"></div> Анализирую тикет и документацию...';
+        supportMessages.appendChild(div);
+        supportMessages.scrollTop = supportMessages.scrollHeight;
+        return div;
+    }
+
+    const div = document.createElement('div');
+    div.className = `message ${role}`;
+
+    let html = escapeHtml(text).replace(/\n/g, '<br>');
+
+    // Ticket auto-closed notification
+    if (role === 'assistant' && meta.ticketClosed) {
+        html = `<div style="background:#d1fae5;border:1px solid #22c55e;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:13px;color:#065f46;">✅ Тикет закрыт — пользователь подтвердил решение проблемы.</div>` + html;
+    }
+
+    // Add meta info for assistant messages
+    if (role === 'assistant' && meta.elapsedMs) {
+        html += `<div style="font-size:10px;color:#9ca3af;margin-top:4px;">⏱ ${(meta.elapsedMs / 1000).toFixed(1)}s</div>`;
+    }
+
+    // RAG sources
+    if (meta.ragSources && meta.ragSources.length > 0) {
+        html += `
+            <div class="support-message-sources">
+                <details>
+                    <summary>📚 Источники (${meta.ragSources.length})</summary>
+                    <ul>
+                        ${meta.ragSources.map(s => `<li>${escapeHtml(s.source || s.title || '—')} · ${escapeHtml(s.section || '')} · score: ${s.score?.toFixed(2) || '?'}</li>`).join('')}
+                    </ul>
+                </details>
+            </div>`;
+    }
+
+    div.innerHTML = html;
+    supportMessages.appendChild(div);
+    supportMessages.scrollTop = supportMessages.scrollHeight;
+
+    supportHistory.push({ role, text, meta });
+    return div;
+}
+
+// ── Status ────────────────────────────────────────────────────────────────
+
+async function loadSupportStatus() {
+    try {
+        const resp = await fetch('/support/status');
+        const data = await resp.json();
+        supportStatusBar.innerHTML = [
+            `CRM: ${data.crm_available ? '✅ доступна' : '❌ недоступна'}`,
+            `RAG: ${data.rag_available ? '✅ ' + data.rag_chunks + ' чанков' : '❌ недоступен'}`,
+            `FAQ: ${data.faq_files ? data.faq_files.map(f => f.replace('docs/support/', '')).join(', ') : 'нет'}`,
+        ].join('<br>');
+    } catch (e) {
+        supportStatusBar.innerHTML = `<span style="color:#ef4444;">Ошибка загрузки статуса</span>`;
     }
 }

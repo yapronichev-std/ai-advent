@@ -22,6 +22,7 @@ from code_review import CodeReviewAgent
 from config import load_system_prompt, save_system_prompt
 from diagram_pipeline import DiagramPipeline
 from invariants import InvariantStore
+from mcp_crm_client import MCPCRMClient
 from mcp_drawio_client import MCPDrawioClient
 from mcp_git_client import MCPGitClient
 from mcp_multi import MultiMCPClient
@@ -30,6 +31,7 @@ from mcp_telegram_client import MCPTelegramClient
 from mcp_weather import MCPWeatherClient
 from profiles import UserProfileManager
 from rag import RAGStore, RAGRetriever, compare_strategies, rewrite_query, rerank_results
+from support_agent import SupportAgent
 
 load_dotenv()
 
@@ -63,6 +65,8 @@ telegram_chat_id: str = ""
 diagram_pipeline: DiagramPipeline | None = None
 rag_store: RAGStore | None = None
 review_agent: CodeReviewAgent | None = None
+crm_client: MCPCRMClient | None = None
+support_agent: SupportAgent | None = None
 control_questions: list[dict] = []
 
 
@@ -184,7 +188,7 @@ async def _index_project_docs(rag_store: RAGStore) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global api_key, deepseek_api_key, mcp_client, git_client, search_client, telegram_client, telegram_chat_id, diagram_pipeline, rag_store
+    global api_key, deepseek_api_key, mcp_client, git_client, search_client, telegram_client, telegram_chat_id, diagram_pipeline, rag_store, crm_client, support_agent
     api_key = os.getenv("OPENROUTER_API_KEY", "")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set in .env")
@@ -193,6 +197,7 @@ async def lifespan(app: FastAPI):
     # ── Создаём все MCP-клиенты ───────────────────────────────────────────────
     _drawio = MCPDrawioClient()
     _git = MCPGitClient()
+    _crm = MCPCRMClient()
     # _search = MCPSearchClient()  # disabled
 
     telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -202,10 +207,11 @@ async def lifespan(app: FastAPI):
     else:
         print("INFO: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set — Telegram notifications disabled")
 
-    all_clients = [_drawio, _git] + ([_telegram] if _telegram else [])
+    all_clients = [_drawio, _git, _crm] + ([_telegram] if _telegram else [])
 
     # Store the git client globally so we can reconnect it on project switch
     git_client = _git
+    crm_client = _crm
 
     # ── Подключаем все через MultiMCPClient ───────────────────────────────────
     mcp_client = MultiMCPClient(all_clients)
@@ -259,7 +265,7 @@ async def lifespan(app: FastAPI):
         rag_store = None
 
     # ── Auto-index project documentation into RAG ────────────────────────────
-    if rag_store and rag_store.count() == 0:
+    if rag_store:
         await _index_project_docs(rag_store)
 
     # ── Code Review Agent ──────────────────────────────────────────────────────
@@ -276,6 +282,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"WARNING: CodeReviewAgent unavailable: {e}")
         review_agent = None
+
+    # ── Support Agent ─────────────────────────────────────────────────────────
+    try:
+        support_agent = SupportAgent(
+            api_key=api_key,
+            deepseek_api_key=deepseek_api_key,
+            model=DEFAULT_MODEL,
+            rag_store=rag_store,
+            crm_client=crm_client if crm_client and mcp_client else None,
+        )
+        print("SupportAgent ready")
+    except Exception as e:
+        print(f"WARNING: SupportAgent unavailable: {e}")
+        support_agent = None
 
     # ── Control questions ───────────────────────────────────────────────────
     global control_questions
@@ -1808,6 +1828,204 @@ async def review_local(request: LocalReviewRequest):
         error=result.error,
         elapsed_ms=result.elapsed_ms,
     )
+
+
+# ── Support Agent ──────────────────────────────────────────────────────────────
+
+
+class SupportQuestionRequest(BaseModel):
+    question: str
+    user_identifier: str = ""  # имя, email или id пользователя
+    ticket_id: str = ""        # конкретный тикет
+    session_id: str = "default"  # id сессии для истории диалога
+
+
+class SupportQuestionResponse(BaseModel):
+    answer: str
+    user_context: dict | None = None
+    ticket: dict | None = None
+    rag_sources: list[dict] = []
+    rag_no_context: bool = False
+    usage: dict = {}
+    elapsed_ms: int = 0
+    error: str = ""
+    ticket_closed: bool = False
+
+
+@app.post("/support/chat", response_model=SupportQuestionResponse)
+async def support_chat(request: SupportQuestionRequest):
+    """Задать вопрос ассистенту поддержки с учётом CRM и FAQ."""
+    if not support_agent:
+        raise HTTPException(status_code=503, detail="Support agent unavailable")
+    if not request.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+
+    try:
+        result = await support_agent.answer_question(
+            question=request.question,
+            user_identifier=request.user_identifier,
+            ticket_id=request.ticket_id,
+            session_id=request.session_id,
+        )
+    except Exception as e:
+        logger.exception("Support agent failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return SupportQuestionResponse(
+        answer=result["answer"],
+        user_context=result.get("user_context"),
+        ticket=result.get("ticket"),
+        rag_sources=result.get("rag_sources", []),
+        rag_no_context=result.get("rag_no_context", False),
+        usage=result.get("usage", {}),
+        elapsed_ms=result.get("elapsed_ms", 0),
+        ticket_closed=result.get("ticket_closed", False),
+    )
+
+
+@app.get("/support/status")
+async def support_status():
+    """Проверить состояние support-ассистента: CRM, RAG, FAQ."""
+    crm_available = crm_client is not None and crm_client._session is not None
+    rag_available = rag_store is not None and rag_store.count() > 0
+
+    # Подсчитать FAQ-документы в docs/support/
+    support_docs = []
+    support_dir = Path("docs/support")
+    if support_dir.exists():
+        for f in support_dir.rglob("*"):
+            if f.is_file() and f.suffix in (".md", ".txt"):
+                support_docs.append(str(f))
+
+    return {
+        "available": support_agent is not None,
+        "crm_available": crm_available,
+        "rag_available": rag_available,
+        "rag_chunks": rag_store.count() if rag_store else 0,
+        "faq_documents": len(support_docs),
+        "faq_files": support_docs,
+    }
+
+
+class SupportSearchUsersRequest(BaseModel):
+    query: str
+
+
+@app.post("/support/users/search")
+async def support_search_users(request: SupportSearchUsersRequest):
+    """Поиск пользователей в CRM."""
+    if not crm_client:
+        raise HTTPException(status_code=503, detail="CRM client unavailable")
+    try:
+        result_json = await crm_client.call_tool("search_users", {"query": request.query.strip()})
+        result = json.loads(result_json)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/support/users/{user_id}")
+async def support_get_user(user_id: str):
+    """Получить профиль пользователя из CRM."""
+    if not crm_client:
+        raise HTTPException(status_code=503, detail="CRM client unavailable")
+    try:
+        result_json = await crm_client.call_tool("get_user", {"user_id": user_id})
+        return json.loads(result_json)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/support/users/{user_id}/tickets")
+async def support_get_user_tickets(user_id: str, status: str = Query(default="")):
+    """Получить тикеты пользователя из CRM."""
+    if not crm_client:
+        raise HTTPException(status_code=503, detail="CRM client unavailable")
+    try:
+        args = {"user_id": user_id}
+        if status:
+            args["status"] = status
+        result_json = await crm_client.call_tool("get_user_tickets", args)
+        return json.loads(result_json)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/support/tickets/{ticket_id}")
+async def support_get_ticket(ticket_id: str):
+    """Получить тикет по id из CRM."""
+    if not crm_client:
+        raise HTTPException(status_code=503, detail="CRM client unavailable")
+    try:
+        result_json = await crm_client.call_tool("get_ticket", {"ticket_id": ticket_id})
+        return json.loads(result_json)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class UpdateTicketRequest(BaseModel):
+    status: str = ""       # новый статус
+    message: str = ""      # сообщение в тикет
+    message_role: str = "support"
+
+
+@app.patch("/support/tickets/{ticket_id}")
+async def support_update_ticket(ticket_id: str, request: UpdateTicketRequest):
+    """Обновить статус тикета или добавить сообщение."""
+    if not crm_client:
+        raise HTTPException(status_code=503, detail="CRM client unavailable")
+    try:
+        args = {"ticket_id": ticket_id}
+        if request.status:
+            args["status"] = request.status
+        if request.message:
+            args["message"] = request.message
+            args["message_role"] = request.message_role
+        result_json = await crm_client.call_tool("update_ticket", args)
+        return json.loads(result_json)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class CreateTicketRequest(BaseModel):
+    user_id: str
+    subject: str
+    description: str
+    priority: str = "medium"
+    category: str = "other"
+
+
+@app.post("/support/tickets", status_code=201)
+async def support_create_ticket(request: CreateTicketRequest):
+    """Создать новый тикет в CRM."""
+    if not crm_client:
+        raise HTTPException(status_code=503, detail="CRM client unavailable")
+    if not request.subject.strip() or not request.description.strip():
+        raise HTTPException(status_code=400, detail="subject and description are required")
+    try:
+        result_json = await crm_client.call_tool("create_ticket", {
+            "user_id": request.user_id,
+            "subject": request.subject,
+            "description": request.description,
+            "priority": request.priority,
+            "category": request.category,
+        })
+        return json.loads(result_json)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/support/tickets")
+async def support_list_tickets(status: str = Query(default="")):
+    """Список всех тикетов (с фильтром по статусу)."""
+    if not crm_client:
+        raise HTTPException(status_code=503, detail="CRM client unavailable")
+    try:
+        # Use search with empty query to get all, then filter by status
+        result_json = await crm_client.call_tool("search_tickets", {"query": "", "status": status} if status else {"query": ""})
+        return json.loads(result_json)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── RAG ───────────────────────────────────────────────────────────────────────
