@@ -28,35 +28,35 @@ jobs:
       - name: Call local code review API
         id: review
         run: |
-          DIFF_CONTENT=$(python3 -c "
-          import sys, json
-          with open('/tmp/pr_diff.txt') as f:
-              print(json.dumps(f.read()))
-          ")
-
-          CHANGED_FILES=$(python3 -c "
-          import sys, json
-          with open('/tmp/changed_files.txt') as f:
-              lines = [l.strip() for l in f if l.strip()]
-          print(json.dumps(lines))
-          ")
-
           REVIEW_URL="http://localhost:8000/review/pr"
 
-          # Escape PR title and description
-          PR_TITLE=$(python3 -c "import sys,json; print(json.dumps('''${{ github.event.pull_request.title }}'''))")
-          PR_BODY=$(python3 -c "import sys,json; print(json.dumps('''${{ github.event.pull_request.body }}'''))")
+          # Build JSON payload to a temp file to avoid "Argument list too long"
+          # when the diff is large (curl -d with inline JSON exceeds ARG_MAX).
+          python3 -c "
+          import json, sys
+
+          with open('/tmp/pr_diff.txt') as f:
+              diff_text = f.read()
+
+          with open('/tmp/changed_files.txt') as f:
+              changed_files = [l.strip() for l in f if l.strip()]
+
+          payload = {
+              'pr_title': '''${{ github.event.pull_request.title }}''',
+              'pr_description': '''${{ github.event.pull_request.body }}''',
+              'base_branch': '${{ github.base_ref }}',
+              'head_branch': '${{ github.head_ref }}',
+              'diff_text': diff_text,
+              'changed_files': changed_files,
+          }
+
+          with open('/tmp/review_payload.json', 'w') as f:
+              json.dump(payload, f)
+          "
 
           curl -s -X POST "$REVIEW_URL" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"pr_title\": $PR_TITLE,
-              \"pr_description\": $PR_BODY,
-              \"base_branch\": \"${{ github.base_ref }}\",
-              \"head_branch\": \"${{ github.head_ref }}\",
-              \"diff_text\": $DIFF_CONTENT,
-              \"changed_files\": $CHANGED_FILES
-            }" > /tmp/review_result.json
+            -d @/tmp/review_payload.json > /tmp/review_result.json
 
           echo "Review completed" >> $GITHUB_STEP_SUMMARY
 

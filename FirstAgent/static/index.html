@@ -17,6 +17,7 @@
                 <button class="main-nav-tab" data-tab="remote">Remote LLM</button>
                 <button class="main-nav-tab" data-tab="rag">RAG</button>
                 <button class="main-nav-tab" data-tab="review">Code Review</button>
+                <button class="main-nav-tab" data-tab="support">Support</button>
             </div>
         </nav>
 
@@ -576,6 +577,91 @@
                 <div class="review-status-bar" id="review-status-bar">
                     <span id="review-status-text">Checking review availability...</span>
                 </div>
+            </div>
+        </div>
+
+        <!-- ══ Support tab ══ -->
+        <div class="main-tab-panel" id="tab-support">
+            <div class="support-page">
+
+                <!-- Left: CRM + User list -->
+                <div class="support-left">
+                    <div class="support-section-title">👤 Пользователь</div>
+                    <div class="support-user-select-row">
+                        <select id="support-user-select" class="support-user-select">
+                            <option value="">— выберите пользователя —</option>
+                        </select>
+                        <button id="support-user-refresh-btn" class="support-btn" title="Обновить список">↻</button>
+                    </div>
+
+                    <!-- Selected user context -->
+                    <div class="support-user-card" id="support-user-card" hidden>
+                        <div class="support-user-name" id="support-user-name"></div>
+                        <div class="support-user-meta" id="support-user-meta"></div>
+                        <div class="support-user-tickets" id="support-user-tickets"></div>
+                    </div>
+                    <div class="support-no-user" id="support-no-user">
+                        Выберите пользователя из списка выше.
+                    </div>
+
+                    <!-- Create ticket -->
+                    <div class="support-section-title" style="margin-top:16px;">🎫 Новый тикет</div>
+                    <div class="support-create-ticket" id="support-create-ticket">
+                        <input type="text" id="support-ticket-subject" class="support-ticket-input"
+                               placeholder="Тема тикета..." autocomplete="off">
+                        <textarea id="support-ticket-desc" class="support-ticket-textarea"
+                                  placeholder="Описание проблемы..." rows="3"></textarea>
+                        <div class="support-ticket-row">
+                            <select id="support-ticket-priority" class="support-ticket-select">
+                                <option value="medium">🟡 Medium</option>
+                                <option value="low">🟢 Low</option>
+                                <option value="high">🟠 High</option>
+                                <option value="critical">🔴 Critical</option>
+                            </select>
+                            <select id="support-ticket-category" class="support-ticket-select">
+                                <option value="other">📋 Other</option>
+                                <option value="auth">🔐 Auth</option>
+                                <option value="billing">💳 Billing</option>
+                                <option value="bug">🐛 Bug</option>
+                                <option value="account">👤 Account</option>
+                                <option value="integration">🔗 Integration</option>
+                            </select>
+                            <button id="support-ticket-create-btn" class="support-btn">Создать</button>
+                        </div>
+                        <div class="support-ticket-result" id="support-ticket-result" hidden></div>
+                    </div>
+
+                    <!-- Status -->
+                    <div class="support-section-title" style="margin-top:16px;">📊 Статус</div>
+                    <div class="support-status-bar" id="support-status-bar">
+                        <span>Проверка...</span>
+                    </div>
+                </div>
+
+                <!-- Right: Chat -->
+                <div class="support-chat-container">
+                    <header class="chat-header">
+                        <h1>🎧 Support Assistant</h1>
+                        <span class="support-context-badge" id="support-context-badge" hidden></span>
+                        <button id="support-clear-btn" title="Clear history">Clear</button>
+                    </header>
+
+                    <div class="messages" id="support-messages">
+                        <div class="empty-state">
+                            Выберите пользователя в панели слева и задайте вопрос...
+                        </div>
+                    </div>
+
+                    <form class="input-area" id="support-chat-form">
+                        <textarea
+                            id="support-input"
+                            placeholder="Опишите проблему..."
+                            rows="1"
+                        ></textarea>
+                        <button type="submit" id="support-send-btn">Send</button>
+                    </form>
+                </div>
+
             </div>
         </div>
 

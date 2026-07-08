@@ -1357,11 +1357,110 @@ Workflow `.github/workflows/pr-review.yml` запускается на events `p
 
 ---
 
+### Day 33 — Ассистент поддержки пользователей
+
+Реализован мини-сервис для поддержки пользователей: ассистент отвечает на вопросы о продукте, использует RAG (FAQ + документация), учитывает контекст пользователя и тикета из CRM через MCP-интеграцию.
+
+#### Новые файлы
+
+| Файл | Назначение |
+|---|---|
+| `mcp_crm_server/server.py` | MCP-сервер CRM (stdio) — 6 инструментов: `search_users`, `get_user`, `get_user_tickets`, `get_ticket`, `search_tickets`, `get_user_context` |
+| `mcp_crm_client.py` | MCP-клиент для stdio-соединения с CRM-сервером |
+| `support_agent.py` | `SupportAgent` — ассистент поддержки: обогащает запрос контекстом CRM + RAG, вызывает LLM |
+| `data/users.json` | 5 тестовых пользователей (разные тарифы, статусы, теги) |
+| `data/tickets.json` | 7 тестовых тикетов (авторизация, биллинг, баги, интеграции, блокировка) |
+| `docs/support/faq-auth.md` | FAQ: частые проблемы с авторизацией (Google OAuth, сброс пароля, 2FA) |
+| `docs/support/faq-billing.md` | FAQ: оплата и тарифы (тарифные планы, смена тарифа, двойное списание, возврат) |
+| `docs/support/product-overview.md` | FAQ: обзор продукта ExampleApp (API, экспорт отчётов, блокировка аккаунта) |
+| `docs/support/faq-jacarta-overview.md` | FAQ: JC-Mobile SDK Android — обзор, устройства, системные требования, JaCarta Service |
+| `docs/support/faq-jacarta-integration.md` | FAQ: JC-Mobile SDK Android — интеграция в Android Studio, состав SDK, сборка примеров |
+| `docs/support/faq-jacarta-applets.md` | FAQ: JC-Mobile SDK Android — 4 типа апплетов, полный список примеров (GOST2, PKI, GOST, LICENSE) |
+| `docs/support/faq-jacarta-api.md` | FAQ: JC-Mobile SDK Android — API: стандарт PKCS#11 + расширения (PKI, Криптотокен 2 ЭП, Laser) |
+| `docs/support/faq-jacarta-troubleshooting.md` | FAQ: JC-Mobile SDK Android — решение проблем (библиотеки, сборка, PIN, токены, архитектура) |
+
+#### Изменённые файлы
+
+- **`main.py`** — импорт `MCPCRMClient` и `SupportAgent`; создание CRM-клиента в lifespan и добавление в `MultiMCPClient`; инициализация `SupportAgent`; автоиндексация `docs/support/` в RAG при старте; 6 новых API-эндпоинтов:
+  - `POST /support/chat` — задать вопрос ассистенту (с учётом CRM + RAG)
+  - `GET /support/status` — статус CRM, RAG, FAQ
+  - `POST /support/users/search` — поиск пользователей в CRM
+  - `GET /support/users/{id}` — профиль пользователя
+  - `GET /support/users/{id}/tickets` — тикеты пользователя с фильтром по статусу
+  - `GET /support/tickets/{id}` — детали тикета
+- **`support_agent.py`** — улучшен retrieval: keyword supplement для тех. терминов (CamelCase, русские/английские слова), FAQ source boost (+0.25 приоритет документам `docs/support/`)
+- **`static/index.html`** — новая вкладка Support (`#tab-support`):
+  - Левая панель: поиск пользователей, карточка контекста, список тикетов, статус-бар
+  - Правая панель: чат с ассистентом, бейдж контекста (имя + тикет), источники RAG
+- **`static/app.js`** — логика вкладки Support:
+  - `searchSupportUsers()` — поиск пользователей через `POST /support/users/search`
+  - `selectSupportUser(userId)` — загрузка профиля и тикетов, отрисовка карточки
+  - `appendSupportMessage()` — отправка вопроса и отображение ответа с источниками
+  - `loadSupportStatus()` — статус CRM, RAG, FAQ при активации вкладки
+- **`static/style.css`** — стили `.support-page`, `.support-left`, `.support-search-*`, `.support-user-*`, `.support-ticket-*`, `.support-chat-container`, `.support-context-badge`, `.support-message-sources`
+
+#### Архитектура
+
+```
+Вопрос → SupportAgent → CRM MCP (контекст пользователя + тикеты)
+                      → RAG (FAQ + документация, с source boost)
+                      → LLM (персонализированный ответ)
+```
+
+#### Примеры
+
+```bash
+# Вопрос с учётом пользователя и тикета
+curl -X POST http://localhost:8000/support/chat \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Почему не работает авторизация через Google?",
+       "user_identifier":"usr_001","ticket_id":"tkt_101"}'
+
+# Поиск пользователей
+curl -X POST http://localhost:8000/support/users/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"иван"}'
+
+# Тикеты пользователя
+curl http://localhost:8000/support/users/usr_001/tickets?status=open
+```
+
+#### Сценарий из задания
+
+«Почему не работает авторизация?» → ассистент находит пользователя Ивана Петрова, его тикет #101, проверяет FAQ по авторизации (`faq-auth.md`) и даёт персонализированный ответ с конкретными шагами по решению проблемы.
+
+#### MCP-инструменты CRM
+
+| Инструмент | Описание |
+|---|---|
+| `search_users` | Поиск пользователей по имени, email или id |
+| `get_user` | Полный профиль пользователя |
+| `get_user_tickets` | Тикеты пользователя (с фильтром по статусу) |
+| `get_ticket` | Детали тикета (включая переписку) |
+| `search_tickets` | Поиск тикетов по ключевым словам и статусу |
+| `get_user_context` | Сводка: профиль + активные тикеты + история |
+| `create_ticket` | Создать новый тикет (сохраняется в `data/tickets.json`) |
+| `update_ticket` | Обновить статус тикета или добавить сообщение |
+
+#### Дополнительные возможности
+
+**Пользователи из `memory/users/`.** CRM читает реальных пользователей приложения, а не статический JSON. Профили заполняются через `/profile` на вкладке Chat. Выбор пользователя — выпадающий список с кнопкой обновления.
+
+**Создание тикетов.** Через API `POST /support/tickets` или форму на вкладке Support (тема, описание, приоритет, категория). Новый тикет автоматически выбирается активным.
+
+**Память диалога.** Ассистент хранит историю разговора в рамках сессии (`session_id`). Follow-up вопросы понимаются без повторения контекста.
+
+**Авто-закрытие тикетов.** Если пользователь пишет «спасибо, помогло», «всё работает» и т.п. — тикет автоматически переводится в `closed`, в переписку добавляется сообщение, UI показывает зелёный баннер и обновляет список.
+
+**Группировка тикетов.** В панели тикеты разделены на «Активные» и «Закрытые», статусы на русском, закрытые полупрозрачные.
+
+---
+
 ### Предыдущие доработки
 
 | День | Фича |
 |---|---|
-| Day 32 | Вкладка Code Review: ревью через LLM, выпадающий список веток, GitHub Actions авто-ревью |
+| Day 33 | Ассистент поддержки: CRM через MCP, RAG FAQ (включая JaCarta SDK), память диалога, авто-закрытие тикетов |
 | Day 31 | Ассистент разработчика: RAG по документации, MCP git, /help, переключение проектов |
 | Day 30 | Вкладка Remote LLM: SSE-стриминг, fallback reasoning_content, кнопка Stop, модель Qwen2.5-1.5B (6.5× быстрее) |
 | Day 29 | Поддержка HTML и MHTML в RAG-системе |
