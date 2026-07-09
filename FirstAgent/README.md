@@ -1456,10 +1456,92 @@ curl http://localhost:8000/support/users/usr_001/tickets?status=open
 
 ---
 
+### Day 34 — File Assistant: ассистент для проактивной работы с файлами
+
+Реализован ассистент, который активно работает с файлами проекта: ищет использования компонентов/API, анализирует код, создаёт отчёты, генерирует документацию. Ассистент сам решает какие инструменты вызывать — задача ставится на уровне цели, а не «открой файл X».
+
+#### Новые файлы
+
+| Файл | Назначение |
+|---|---|
+| `file_assistant.py` | `FileAssistant` — агент с dynamic tool-calling loop, файловым системным промптом и сессионной памятью |
+
+#### Изменённые файлы
+
+- **`mcp_git_server/server.py`** — 2 новых MCP-инструмента (теперь 8 вместо 6):
+  - `search_content` — grep-поиск по проекту (регексы, glob-фильтр, Python fallback без grep)
+  - `write_file` — создание/перезапись файлов с режимом `diff_only=true` для превью изменений через git diff
+- **`main.py`** — импорт `FileAssistant`; глобальная переменная `file_assistant`; инициализация в `lifespan()` с передачей общего `MultiMCPClient`; 2 API-эндпоинта:
+  - `GET /file/status` — доступность агента, количество инструментов, модель
+  - `POST /file/query` — выполнить файловую задачу (возвращает ответ, список затронутых файлов, usage)
+- **`static/index.html`** — новая вкладка File Assistant (`#tab-file`):
+  - Левая панель: статус агента и список затронутых файлов
+  - Правая панель: чат с ассистентом, примеры задач в плейсхолдере
+- **`static/app.js`** — логика вкладки File Assistant:
+  - `loadFileStatus()` — статус агента (tools, модель) при активации вкладки
+  - Отправка задачи через `POST /file/query`, отображение ответа и списка `files_affected`
+  - Кнопка Clear для сброса истории
+- **`static/style.css`** — стили `.file-page`, `.file-left`, `.file-section-title`, `.file-status-bar`, `.file-affected-item`, `.file-chat-container`
+
+#### Архитектура
+
+```
+Задача → FileAssistant.execute()
+           → _call_api()  ← dynamic tool-calling loop (ChatAgent pattern)
+             → LLM решает: search_content(pattern="ChatAgent", glob="*.py")
+             → MultiMCPClient → MCPGitClient → mcp_git_server
+             → результат возвращается LLM
+             → LLM решает: read_file(path="agent.py") для контекста
+             → LLM решает: write_file(diff_only=true, ...) — превью
+             → финальный ответ + files_affected
+```
+
+#### MCP-инструменты (новые)
+
+| Инструмент | Описание |
+|---|---|
+| `search_content` | Поиск текста/регекса по файлам проекта. Аргументы: `pattern` (обязательный), `glob` (фильтр, например `*.py`), `max_results` (default 50). Использует системный `grep` для скорости, fallback на Python `os.walk` + `re`. |
+| `write_file` | Создать/перезаписать файл. Аргументы: `path`, `content`, `diff_only` (default false). При `diff_only=true` возвращает diff без записи. Для существующих файлов использует `git diff --no-index`. |
+
+#### Примеры
+
+```bash
+# Поиск использований компонента
+curl -X POST http://localhost:8000/file/query \
+  -H "Content-Type: application/json" \
+  -d '{"task":"Найди все использования ChatAgent в кодовой базе и подготовь сводку"}'
+
+# Проверка паттернов в коде
+curl -X POST http://localhost:8000/file/query \
+  -H "Content-Type: application/json" \
+  -d '{"task":"Проверь все Python файлы на наличие try/except и создай отчёт"}'
+
+# Генерация документации
+curl -X POST http://localhost:8000/file/query \
+  -H "Content-Type: application/json" \
+  -d '{"task":"Сгенерируй CHANGELOG.md на основе последних git-коммитов"}'
+```
+
+#### Сценарии из задания
+
+1. **«Найди все использования ChatAgent»** — агент вызывает `search_content("ChatAgent", "*.py")`, находит class definition в `agent.py:42`, импорт и фабрику в `main.py:20,56,103-117`, готовит структурированную сводку. Работает с 2+ файлами.
+
+2. **«Проверь Python файлы на try/except»** — агент вызывает `search_content("try:", "*.py")` + `search_content("except", "*.py")`, анализирует 29 файлов, создаёт табличный отчёт с качественной оценкой для каждого файла.
+
+#### Ключевые решения
+
+- **Dynamic tool calling** — агент использует тот же pattern что и `ChatAgent._call_api` (agent.py:1027-1106): в цикле отправляет tools в LLM, при `finish_reason == "tool_calls"` диспатчит в MCP, добавляет результат и перевызывает LLM. В отличие от `CodeReviewAgent` и `SupportAgent`, которые жёстко кодируют вызовы инструментов.
+- **diff_only preview** — перед записью агент инструктирован вызывать `write_file(diff_only=true)`, чтобы пользователь видел изменения до применения.
+- **Безопасность** — `write_file` валидирует путь через `_is_safe_path()` (только внутри PROJECT_ROOT); `search_content` ограничен 50 результатами и 30-секундным таймаутом.
+- **Переиспользование MCP** — FileAssistant получает уже созданный `MultiMCPClient` из `lifespan()`, новые инструменты появляются автоматически.
+
+---
+
 ### Предыдущие доработки
 
 | День | Фича |
 |---|---|
+| Day 34 | File Assistant: проактивная работа с файлами — grep-поиск, запись с diff-превью, 2 демо-сценария |
 | Day 33 | Ассистент поддержки: CRM через MCP, RAG FAQ (включая JaCarta SDK), память диалога, авто-закрытие тикетов |
 | Day 31 | Ассистент разработчика: RAG по документации, MCP git, /help, переключение проектов |
 | Day 30 | Вкладка Remote LLM: SSE-стриминг, fallback reasoning_content, кнопка Stop, модель Qwen2.5-1.5B (6.5× быстрее) |

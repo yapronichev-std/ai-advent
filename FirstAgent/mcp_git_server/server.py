@@ -15,8 +15,10 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import mcp.types as types
@@ -215,6 +217,63 @@ async def list_tools() -> list[types.Tool]:
                 "required": ["path"],
             },
         ),
+        types.Tool(
+            name="search_content",
+            description=(
+                "Search for a text pattern across all project files (like grep). "
+                "Returns matching file paths, line numbers, and the matching line content. "
+                "Use this to find all usages of a class, function, API, or text pattern. "
+                "Results are limited to max_results matches to avoid overwhelming output."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Text or regex pattern to search for. Uses Python regex syntax.",
+                    },
+                    "glob": {
+                        "type": "string",
+                        "description": "Optional file glob pattern to restrict search (e.g. '*.py', '*.md', '*.js').",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of matches to return. Default: 50.",
+                        "default": 50,
+                    },
+                },
+                "required": ["pattern"],
+            },
+        ),
+        types.Tool(
+            name="write_file",
+            description=(
+                "Create a new file or overwrite an existing one in the project directory. "
+                "The path must be inside the project root. "
+                "If diff_only=true, returns the diff that WOULD be applied without actually writing. "
+                "Use diff_only=true first to preview changes, then diff_only=false to apply. "
+                "Returns information about what was written, including a git diff."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the file, relative to project root.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Full file content to write (UTF-8 text).",
+                    },
+                    "diff_only": {
+                        "type": "boolean",
+                        "description": "If true, return the diff without actually writing the file. Default: false.",
+                        "default": False,
+                    },
+                },
+                "required": ["path", "content"],
+            },
+        ),
     ]
 
 
@@ -236,6 +295,10 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             result = _handle_list_project_files(arguments)
         elif name == "read_file":
             result = _handle_read_file(arguments)
+        elif name == "search_content":
+            result = _handle_search_content(arguments)
+        elif name == "write_file":
+            result = _handle_write_file(arguments)
         else:
             raise ValueError(f"Unknown tool: '{name}'")
 
@@ -501,6 +564,222 @@ def _handle_read_file(arguments: dict) -> dict:
         "total_lines": total_lines,
         "content": text,
         "size": file_size,
+    }
+
+
+def _handle_search_content(arguments: dict) -> dict:
+    """Search for text pattern across project files (grep-like)."""
+    pattern = arguments["pattern"]
+    glob_filter = arguments.get("glob")
+    max_results = arguments.get("max_results", 50)
+
+    results: list[dict] = []
+
+    # ── Try grep first (fastest) ──────────────────────────────────────────
+    try:
+        cmd = ["grep", "-rnI", "-E", pattern, "."]
+        grep_result = subprocess.run(
+            cmd,
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if grep_result.returncode in (0, 1):  # 0=matches, 1=no matches
+            for line in grep_result.stdout.strip().split("\n"):
+                if not line:
+                    continue
+                # Format: ./relative/path:line_number:content
+                parts = line.split(":", 2)
+                if len(parts) >= 3:
+                    file_path = parts[0].lstrip("./")
+                    line_num = parts[1]
+                    content = parts[2].strip()
+
+                    # Apply glob filter if specified
+                    if glob_filter:
+                        if not Path(file_path).match(glob_filter):
+                            continue
+
+                    results.append({
+                        "file": file_path,
+                        "line_number": int(line_num) if line_num.isdigit() else line_num,
+                        "line_content": content,
+                    })
+                    if len(results) >= max_results:
+                        break
+        # grep not found or error — fall through to Python
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # ── Python fallback ───────────────────────────────────────────────────
+    if not results:
+        try:
+            compiled = re.compile(pattern)
+        except re.error:
+            return {"error": f"Invalid regex pattern: '{pattern}'", "matches": []}
+
+        for root, dirs, filenames in os.walk(PROJECT_ROOT):
+            dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS and not d.startswith(".")]
+            for fname in filenames:
+                fpath = Path(root) / fname
+
+                # Skip excluded extensions
+                suffix_lower = fpath.suffix.lower()
+                if suffix_lower in EXCLUDE_EXTENSIONS:
+                    continue
+                if fpath.stat().st_size > MAX_FILE_SIZE_READ:
+                    continue
+
+                # Apply glob filter
+                if glob_filter and not fpath.match(glob_filter):
+                    continue
+
+                try:
+                    text = fpath.read_text(encoding="utf-8")
+                except (UnicodeDecodeError, OSError):
+                    continue
+
+                for i, line in enumerate(text.split("\n"), 1):
+                    if compiled.search(line):
+                        rel = fpath.relative_to(PROJECT_ROOT)
+                        results.append({
+                            "file": str(rel),
+                            "line_number": i,
+                            "line_content": line.strip(),
+                        })
+                        if len(results) >= max_results:
+                            break
+                if len(results) >= max_results:
+                    break
+            if len(results) >= max_results:
+                break
+
+    return {
+        "pattern": pattern,
+        "matches": results,
+        "total_matches": len(results),
+        "truncated": len(results) >= max_results,
+        "max_results": max_results,
+    }
+
+
+def _handle_write_file(arguments: dict) -> dict:
+    """Create or overwrite a file, optionally only showing the diff."""
+    path_str = arguments["path"]
+    content = arguments["content"]
+    diff_only = arguments.get("diff_only", False)
+
+    try:
+        resolved = _is_safe_path(path_str)
+    except ValueError as e:
+        return {"error": str(e), "ok": False}
+
+    is_new = not resolved.exists()
+
+    if diff_only:
+        # ── Preview mode: show diff without writing ───────────────────────
+        if is_new:
+            # New file: show the entire content as added lines
+            diff_lines = [f"+{line}" for line in content.split("\n")]
+            diff_text = "\n".join(diff_lines)
+        else:
+            # Existing file: compute git-like diff
+            try:
+                old_text = resolved.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                return {"error": f"Cannot read existing file '{path_str}' as UTF-8", "ok": False}
+
+            # Write content to temp file, run git diff --no-index
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=Path(path_str).suffix, delete=False, encoding="utf-8"
+            ) as tmp:
+                tmp.write(content)
+                tmp_path = tmp.name
+
+            try:
+                diff_result = subprocess.run(
+                    ["git", "diff", "--no-index", "--", str(resolved), tmp_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                if diff_result.returncode in (0, 1):
+                    diff_text = diff_result.stdout.strip()
+                    if not diff_text:
+                        diff_text = "(no changes — content is identical)"
+                else:
+                    # git diff --no-index failed (maybe not in a git repo?)
+                    # Fall back to simple line-by-line diff
+                    old_lines = old_text.split("\n")
+                    new_lines = content.split("\n")
+                    diff_parts = []
+                    max_len = max(len(old_lines), len(new_lines))
+                    for i in range(max_len):
+                        old_line = old_lines[i] if i < len(old_lines) else None
+                        new_line = new_lines[i] if i < len(new_lines) else None
+                        if old_line != new_line:
+                            if old_line is not None:
+                                diff_parts.append(f"-{old_line}")
+                            if new_line is not None:
+                                diff_parts.append(f"+{new_line}")
+                    diff_text = "\n".join(diff_parts) if diff_parts else "(no changes)"
+            finally:
+                os.unlink(tmp_path)
+
+        return {
+            "ok": True,
+            "path": path_str,
+            "is_new": is_new,
+            "diff_only": True,
+            "diff": diff_text[:20_000],
+            "size": len(content),
+        }
+
+    # ── Write mode: actually write the file ───────────────────────────────
+    try:
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return {"error": f"Cannot create directory for '{path_str}': {e}", "ok": False}
+
+    # Compute diff before writing (if file exists)
+    diff_text = ""
+    if not is_new:
+        try:
+            old_text = resolved.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            old_text = ""
+        if old_text and old_text != content:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=Path(path_str).suffix, delete=False, encoding="utf-8"
+            ) as tmp:
+                tmp.write(content)
+                tmp_path = tmp.name
+            try:
+                diff_result = subprocess.run(
+                    ["git", "diff", "--no-index", "--", str(resolved), tmp_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                if diff_result.returncode in (0, 1):
+                    diff_text = diff_result.stdout.strip()
+            finally:
+                os.unlink(tmp_path)
+    else:
+        diff_text = "\n".join(f"+{line}" for line in content.split("\n"))
+
+    try:
+        resolved.write_text(content, encoding="utf-8")
+    except OSError as e:
+        return {"error": f"Cannot write file '{path_str}': {e}", "ok": False}
+
+    return {
+        "ok": True,
+        "path": path_str,
+        "is_new": is_new,
+        "diff": diff_text[:20_000] if diff_text else "",
+        "size": len(content),
     }
 
 

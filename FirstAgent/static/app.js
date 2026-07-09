@@ -44,6 +44,9 @@ document.querySelectorAll('.main-nav-tab').forEach(btn => {
             loadSupportUsers();
             loadSupportStatus();
         }
+        if (tab === 'file') {
+            loadFileStatus();
+        }
     });
 });
 
@@ -2907,3 +2910,108 @@ async function loadSupportStatus() {
         supportStatusBar.innerHTML = `<span style="color:#ef4444;">Ошибка загрузки статуса</span>`;
     }
 }
+
+// ── File Assistant Tab ─────────────────────────────────────────────────────────
+
+let fileFilesAffected = [];
+
+const fileStatusBar    = document.getElementById('file-status-bar');
+const fileMessages     = document.getElementById('file-messages');
+const fileForm         = document.getElementById('file-chat-form');
+const fileInput        = document.getElementById('file-input');
+const fileSendBtn      = document.getElementById('file-send-btn');
+const fileClearBtn     = document.getElementById('file-clear-btn');
+const fileAffectedList = document.getElementById('file-affected-list');
+
+async function loadFileStatus() {
+    try {
+        const res = await fetch('/file/status');
+        const data = await res.json();
+        if (data.available) {
+            fileStatusBar.innerHTML = `<span>Ready &middot; ${data.tool_count} tools &middot; ${escapeHtml(data.model)}</span>`;
+        } else {
+            fileStatusBar.innerHTML = `<span style="color:#ef4444;">Unavailable: ${escapeHtml(data.error || 'unknown')}</span>`;
+        }
+    } catch (e) {
+        fileStatusBar.innerHTML = `<span style="color:#ef4444;">Cannot reach file assistant</span>`;
+    }
+}
+
+function appendFileMessage(role, text) {
+    const emptyState = fileMessages.querySelector('.empty-state');
+    if (emptyState) emptyState.remove();
+
+    const el = document.createElement('div');
+    el.className = `message ${role}`;
+    el.textContent = text;
+    fileMessages.appendChild(el);
+    fileMessages.scrollTop = fileMessages.scrollHeight;
+    return el;
+}
+
+function renderFileFilesAffected() {
+    fileAffectedList.innerHTML = '';
+    if (fileFilesAffected.length === 0) {
+        fileAffectedList.innerHTML = '<div class="file-empty">No files affected yet.</div>';
+    } else {
+        fileFilesAffected.forEach(f => {
+            const el = document.createElement('div');
+            el.className = 'file-affected-item';
+            el.textContent = f;
+            fileAffectedList.appendChild(el);
+        });
+    }
+}
+
+// Tab activation hook for the nav button
+const fileTabBtn = document.querySelector('.main-nav-tab[data-tab="file"]');
+if (fileTabBtn) {
+    fileTabBtn.addEventListener('click', loadFileStatus);
+}
+
+fileForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const task = fileInput.value.trim();
+    if (!task) return;
+
+    fileInput.value = '';
+    fileInput.disabled = true;
+    fileSendBtn.disabled = true;
+
+    appendFileMessage('user', task);
+    const loadingEl = appendFileMessage('thinking', 'Working...');
+
+    try {
+        const resp = await fetch('/file/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task, session_id: 'default' }),
+        });
+        const data = await resp.json();
+        loadingEl.remove();
+
+        if (data.error) {
+            appendFileMessage('assistant', `Error: ${data.error}`);
+        } else {
+            appendFileMessage('assistant', data.answer);
+            fileFilesAffected = data.files_affected || [];
+            renderFileFilesAffected();
+        }
+    } catch (err) {
+        loadingEl.remove();
+        appendFileMessage('assistant', `Network error: ${escapeHtml(err.message)}`);
+    }
+
+    fileInput.disabled = false;
+    fileSendBtn.disabled = false;
+    fileInput.focus();
+});
+
+fileClearBtn.addEventListener('click', () => {
+    fileFilesAffected = [];
+    fileMessages.innerHTML = '<div class="empty-state">Give me a file-related task. Examples:<br>'
+        + '"Find all usages of ChatAgent across the codebase"<br>'
+        + '"Check all Python files for error handling patterns"<br>'
+        + '"Generate a CHANGELOG.md from recent git commits"</div>';
+    renderFileFilesAffected();
+});

@@ -31,6 +31,7 @@ from mcp_telegram_client import MCPTelegramClient
 from mcp_weather import MCPWeatherClient
 from profiles import UserProfileManager
 from rag import RAGStore, RAGRetriever, compare_strategies, rewrite_query, rerank_results
+from file_assistant import FileAssistant
 from support_agent import SupportAgent
 
 load_dotenv()
@@ -67,6 +68,7 @@ rag_store: RAGStore | None = None
 review_agent: CodeReviewAgent | None = None
 crm_client: MCPCRMClient | None = None
 support_agent: SupportAgent | None = None
+file_assistant: FileAssistant | None = None
 control_questions: list[dict] = []
 
 
@@ -188,7 +190,7 @@ async def _index_project_docs(rag_store: RAGStore) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global api_key, deepseek_api_key, mcp_client, git_client, search_client, telegram_client, telegram_chat_id, diagram_pipeline, rag_store, crm_client, support_agent
+    global api_key, deepseek_api_key, mcp_client, git_client, search_client, telegram_client, telegram_chat_id, diagram_pipeline, rag_store, crm_client, support_agent, file_assistant
     api_key = os.getenv("OPENROUTER_API_KEY", "")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set in .env")
@@ -296,6 +298,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"WARNING: SupportAgent unavailable: {e}")
         support_agent = None
+
+    # ── File Assistant Agent ────────────────────────────────────────────────────
+    try:
+        file_assistant = FileAssistant(
+            api_key=api_key,
+            deepseek_api_key=deepseek_api_key,
+            model=DEFAULT_MODEL,
+            mcp_client=mcp_client,
+        )
+        print("FileAssistant ready")
+    except Exception as e:
+        print(f"WARNING: FileAssistant unavailable: {e}")
+        file_assistant = None
 
     # ── Control questions ───────────────────────────────────────────────────
     global control_questions
@@ -1827,6 +1842,70 @@ async def review_local(request: LocalReviewRequest):
         rag_sources=result.rag_sources,
         error=result.error,
         elapsed_ms=result.elapsed_ms,
+    )
+
+
+# ── File Assistant Agent ───────────────────────────────────────────────────────
+
+
+class FileQueryRequest(BaseModel):
+    task: str
+    session_id: str = "default"
+
+
+class FileQueryResponse(BaseModel):
+    answer: str = ""
+    files_affected: list[str] = []
+    usage: dict = {}
+    elapsed_ms: int = 0
+    error: str = ""
+
+
+# ── File Assistant Agent ───────────────────────────────────────────────────────
+
+
+@app.get("/file/status")
+async def file_status():
+    """Check FileAssistant availability and MCP tool readiness."""
+    if not file_assistant:
+        return {"available": False, "error": "FileAssistant not initialized"}
+    mcp_ok = file_assistant.mcp_client is not None
+    tool_count = len(file_assistant.mcp_client.tools) if mcp_ok else 0
+    return {
+        "available": True,
+        "mcp_available": mcp_ok,
+        "tool_count": tool_count,
+        "model": file_assistant.model,
+    }
+
+
+@app.post("/file/query", response_model=FileQueryResponse)
+async def file_query(request: FileQueryRequest):
+    """Execute a file-related task using the File Assistant agent.
+
+    The agent will proactively use tools like search_content, read_file,
+    and write_file to complete the task. It may touch multiple files.
+    """
+    if not file_assistant:
+        raise HTTPException(status_code=503, detail="FileAssistant unavailable")
+    if not request.task.strip():
+        raise HTTPException(status_code=400, detail="task is required")
+
+    try:
+        result = await file_assistant.execute(
+            task=request.task,
+            session_id=request.session_id,
+        )
+    except Exception as e:
+        logger.exception("FileAssistant failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return FileQueryResponse(
+        answer=result["answer"],
+        files_affected=result.get("files_affected", []),
+        usage=result.get("usage", {}),
+        elapsed_ms=result.get("elapsed_ms", 0),
+        error=result.get("error", ""),
     )
 
 
