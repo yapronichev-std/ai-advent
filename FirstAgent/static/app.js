@@ -145,21 +145,97 @@ const reviewRagSources     = document.getElementById('review-rag-sources');
 const MAX_MESSAGE_HISTORY = 10;
 const MH_STORAGE_KEY = 'chat_message_history';
 
-function _loadMessageHistory() {
-    try {
-        const raw = localStorage.getItem(MH_STORAGE_KEY);
-        return raw ? JSON.parse(raw) : [];
-    } catch { return []; }
-}
-function _saveMessageHistory() {
-    try {
-        localStorage.setItem(MH_STORAGE_KEY, JSON.stringify(messageHistory));
-    } catch { /* quota exceeded — ignore */ }
+/**
+ * Factory: creates input history navigation for a chat textarea.
+ *
+ * Sets up keydown listeners for Enter (submit), ArrowUp/ArrowDown (history)
+ * on the given input element. Returns { push, clear } to manage history.
+ *
+ * If storageKey is provided, history is persisted to localStorage.
+ */
+function createInputHistory({ input, form, clearBtn, storageKey, maxHistory = MAX_MESSAGE_HISTORY }) {
+    let history = storageKey ? _load(storageKey) : [];
+    let cursor = -1;
+    let draft = '';
+
+    function _load(key) {
+        try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : []; }
+        catch { return []; }
+    }
+    function _save() {
+        if (!storageKey) return;
+        try { localStorage.setItem(storageKey, JSON.stringify(history)); }
+        catch { /* quota exceeded */ }
+    }
+
+    function push(text) {
+        if (history[0] !== text) {
+            history.unshift(text);
+            if (history.length > maxHistory) history.pop();
+            _save();
+        }
+        cursor = -1;
+        draft = '';
+    }
+
+    function clear() {
+        history = storageKey ? _load(storageKey) : [];
+        if (storageKey) { history.length = 0; _save(); }
+        else { history = []; }
+        cursor = -1;
+        draft = '';
+    }
+
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            form.dispatchEvent(new Event('submit'));
+            return;
+        }
+
+        if (e.key === 'ArrowUp' && history.length > 0) {
+            e.preventDefault();
+            if (cursor === -1) {
+                draft = input.value;
+                cursor = 0;
+            } else if (cursor < history.length - 1) {
+                cursor++;
+            }
+            input.value = history[cursor];
+            input.setSelectionRange(input.value.length, input.value.length);
+            input.dispatchEvent(new Event('input'));
+        }
+
+        if (e.key === 'ArrowDown') {
+            if (cursor > 0) {
+                e.preventDefault();
+                cursor--;
+                input.value = history[cursor];
+                input.setSelectionRange(input.value.length, input.value.length);
+                input.dispatchEvent(new Event('input'));
+            } else if (cursor === 0) {
+                e.preventDefault();
+                cursor = -1;
+                input.value = draft;
+                draft = '';
+                input.dispatchEvent(new Event('input'));
+            }
+        }
+    });
+
+    if (clearBtn) {
+        clearBtn.addEventListener('click', clear);
+    }
+
+    return { push, clear };
 }
 
-const messageHistory = _loadMessageHistory();
-let historyCursor = -1;    // -1 = not navigating, 0 = latest, N = older
-let historyDraft = '';     // saved text before navigation
+// ── Chat tab history (persisted to localStorage) ─────────────────────────────
+const chatHistory = createInputHistory({
+    input: document.getElementById('input'),
+    form: document.getElementById('chat-form'),
+    storageKey: MH_STORAGE_KEY,
+});
 
 // ── Project switching ────────────────────────────────────────────────────────
 
@@ -751,57 +827,11 @@ form.addEventListener('submit', (e) => {
     const text = input.value.trim();
     if (!text) return;
 
-    // Save to message history (persisted in localStorage)
-    if (messageHistory[0] !== text) {
-        messageHistory.unshift(text);
-        if (messageHistory.length > MAX_MESSAGE_HISTORY) messageHistory.pop();
-        _saveMessageHistory();
-    }
-    historyCursor = -1;
-    historyDraft = '';
+    chatHistory.push(text);
 
     input.value = '';
     input.style.height = 'auto';
     sendMessage(text);
-});
-
-input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        form.dispatchEvent(new Event('submit'));
-        return;
-    }
-
-    // ── Up/Down arrow: message history navigation ────────────────────────
-    if (e.key === 'ArrowUp' && messageHistory.length > 0) {
-        e.preventDefault();
-        if (historyCursor === -1) {
-            historyDraft = input.value;
-            historyCursor = 0;
-        } else if (historyCursor < messageHistory.length - 1) {
-            historyCursor++;
-        }
-        input.value = messageHistory[historyCursor];
-        // Move cursor to end of text
-        input.setSelectionRange(input.value.length, input.value.length);
-        input.dispatchEvent(new Event('input')); // trigger auto-resize
-    }
-
-    if (e.key === 'ArrowDown') {
-        if (historyCursor > 0) {
-            e.preventDefault();
-            historyCursor--;
-            input.value = messageHistory[historyCursor];
-            input.setSelectionRange(input.value.length, input.value.length);
-            input.dispatchEvent(new Event('input'));
-        } else if (historyCursor === 0) {
-            e.preventDefault();
-            historyCursor = -1;
-            input.value = historyDraft;
-            historyDraft = '';
-            input.dispatchEvent(new Event('input'));
-        }
-    }
 });
 
 input.addEventListener('input', () => {
@@ -821,6 +851,11 @@ const localMessagesEl   = document.getElementById('local-messages');
 const localForm         = document.getElementById('local-chat-form');
 const localInput        = document.getElementById('local-input');
 const localSendBtn      = document.getElementById('local-send-btn');
+const localInputHistory = createInputHistory({
+    input: localInput,
+    form: localForm,
+    clearBtn: localClearBtn,
+});
 const localClearBtn     = document.getElementById('local-clear-btn');
 const localModelSelect  = document.getElementById('local-model-select');
 
@@ -1152,16 +1187,12 @@ localForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const text = localInput.value.trim();
     if (!text) return;
+
+    localInputHistory.push(text);
+
     localInput.value = '';
     localInput.style.height = 'auto';
     sendLocalMessage(text);
-});
-
-localInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        localForm.dispatchEvent(new Event('submit'));
-    }
 });
 
 localInput.addEventListener('input', () => {
@@ -1956,6 +1987,11 @@ const remoteForm = document.getElementById('remote-chat-form');
 const remoteInput = document.getElementById('remote-input');
 const remoteSendBtn = document.getElementById('remote-send-btn');
 const remoteStopBtn = document.getElementById('remote-stop-btn');
+const remoteInputHistory = createInputHistory({
+    input: remoteInput,
+    form: remoteForm,
+    clearBtn: remoteClearBtn,
+});
 const remoteClearBtn = document.getElementById('remote-clear-btn');
 let remoteAbortController = null;  // for stopping in-flight generation
 const remoteStatusDot = document.getElementById('remote-status-dot');
@@ -2033,12 +2069,20 @@ function setRemoteOffline(reason) {
 
 // ── Chat ──────────────────────────────────────────────────────────────────
 
+remoteInput.addEventListener('input', () => {
+    remoteInput.style.height = 'auto';
+    remoteInput.style.height = `${remoteInput.scrollHeight}px`;
+});
+
 remoteForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const text = remoteInput.value.trim();
     if (!text || !remoteAvailable) return;
 
+    remoteInputHistory.push(text);
+
     remoteInput.value = '';
+    remoteInput.style.height = 'auto';
     remoteSendBtn.style.display = 'none';
     remoteStopBtn.style.display = '';
     remoteStopBtn.disabled = false;
@@ -2525,6 +2569,11 @@ const supportForm          = document.getElementById('support-chat-form');
 const supportInput         = document.getElementById('support-input');
 const supportSendBtn       = document.getElementById('support-send-btn');
 const supportClearBtn      = document.getElementById('support-clear-btn');
+const supportInputHistory = createInputHistory({
+    input: supportInput,
+    form: supportForm,
+    clearBtn: supportClearBtn,
+});
 
 // ── Load users into dropdown ──────────────────────────────────────────────
 
@@ -2719,12 +2768,20 @@ async function refreshUserTickets(userId) {
 
 // ── Chat ──────────────────────────────────────────────────────────────────
 
+supportInput.addEventListener('input', () => {
+    supportInput.style.height = 'auto';
+    supportInput.style.height = `${supportInput.scrollHeight}px`;
+});
+
 supportForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const question = supportInput.value.trim();
     if (!question) return;
 
+    supportInputHistory.push(question);
+
     supportInput.value = '';
+    supportInput.style.height = 'auto';
     supportInput.disabled = true;
     supportSendBtn.disabled = true;
 
@@ -2921,6 +2978,11 @@ const fileForm         = document.getElementById('file-chat-form');
 const fileInput        = document.getElementById('file-input');
 const fileSendBtn      = document.getElementById('file-send-btn');
 const fileClearBtn     = document.getElementById('file-clear-btn');
+const fileInputHistory  = createInputHistory({
+    input: fileInput,
+    form: fileForm,
+    clearBtn: fileClearBtn,
+});
 const fileAffectedList = document.getElementById('file-affected-list');
 
 async function loadFileStatus() {
@@ -2969,12 +3031,20 @@ if (fileTabBtn) {
     fileTabBtn.addEventListener('click', loadFileStatus);
 }
 
+fileInput.addEventListener('input', () => {
+    fileInput.style.height = 'auto';
+    fileInput.style.height = `${fileInput.scrollHeight}px`;
+});
+
 fileForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const task = fileInput.value.trim();
     if (!task) return;
 
+    fileInputHistory.push(task);
+
     fileInput.value = '';
+    fileInput.style.height = 'auto';
     fileInput.disabled = true;
     fileSendBtn.disabled = true;
 

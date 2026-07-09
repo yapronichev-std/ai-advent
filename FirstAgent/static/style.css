@@ -597,26 +597,34 @@ body {
 
 #input,
 #local-input,
-#remote-input {
+#remote-input,
+#support-input,
+#file-input {
     flex: 1;
     resize: none;
     border: 1px solid #d1d5db;
     border-radius: 8px;
     padding: 10px 14px;
     font-size: 14px;
+    line-height: 1.4;
     font-family: inherit;
     outline: none;
-    max-height: 120px;
+    max-height: 118px;  /* ~5 rows at 14px × 1.4 line-height + padding */
+    overflow-y: auto;
     transition: border-color 0.15s;
 }
 
 #input:focus,
 #local-input:focus,
-#remote-input:focus { border-color: #2563eb; }
+#remote-input:focus,
+#support-input:focus,
+#file-input:focus { border-color: #2563eb; }
 
 #send-btn,
 #local-send-btn,
-#remote-send-btn {
+#remote-send-btn,
+#support-send-btn,
+#file-send-btn {
     background: #2563eb;
     color: #fff;
     border: none;
@@ -631,10 +639,14 @@ body {
 
 #send-btn:hover,
 #local-send-btn:hover,
-#remote-send-btn:hover    { background: #1d4ed8; }
+#remote-send-btn:hover,
+#support-send-btn:hover,
+#file-send-btn:hover    { background: #1d4ed8; }
 #send-btn:disabled,
 #local-send-btn:disabled,
-#remote-send-btn:disabled { background: #93c5fd; cursor: not-allowed; }
+#remote-send-btn:disabled,
+#support-send-btn:disabled,
+#file-send-btn:disabled { background: #93c5fd; cursor: not-allowed; }
 
 .stop-btn {
     background: #dc2626;
@@ -3236,44 +3248,6 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
 }
-
-.support-chat-container .input-area {
-    flex-shrink: 0;
-    padding: 10px 16px;
-    border-top: 1px solid #e5e7eb;
-    background: #fff;
-    display: flex;
-    gap: 8px;
-}
-
-.support-chat-container .input-area textarea {
-    flex: 1;
-    padding: 8px 12px;
-    border: 1px solid #d1d5db;
-    border-radius: 8px;
-    font-size: 13px;
-    resize: none;
-    outline: none;
-    font-family: inherit;
-}
-
-.support-chat-container .input-area textarea:focus {
-    border-color: #6366f1;
-    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
-}
-
-.support-chat-container .input-area button {
-    padding: 8px 18px;
-    background: #6366f1;
-    color: #fff;
-    border: none;
-    border-radius: 8px;
-    font-size: 13px;
-    cursor: pointer;
-}
-
-.support-chat-container .input-area button:hover { background: #4f46e5; }
-.support-chat-container .input-area button:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .support-chat-container .messages {
     flex: 1;
