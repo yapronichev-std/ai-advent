@@ -1909,6 +1909,24 @@ async def file_query(request: FileQueryRequest):
     )
 
 
+@app.post("/file/query/stream")
+async def file_query_stream(request: FileQueryRequest):
+    """SSE-streamed file task — tokens arrive as the LLM generates them."""
+    if not file_assistant:
+        raise HTTPException(status_code=503, detail="FileAssistant unavailable")
+    if not request.task.strip():
+        raise HTTPException(status_code=400, detail="task is required")
+
+    async def event_gen():
+        async for event in file_assistant.execute_stream(
+            task=request.task,
+            session_id=request.session_id,
+        ):
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
 # ── Support Agent ──────────────────────────────────────────────────────────────
 
 

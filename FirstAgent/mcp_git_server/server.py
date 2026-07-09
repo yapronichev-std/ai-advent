@@ -55,7 +55,7 @@ EXCLUDE_DIRS = {
     "memory", "diagrams",
 }
 
-MAX_FILE_SIZE_READ = 50_000  # 50 KB max for read_file
+MAX_FILE_SIZE_READ = 200_000  # 200 KB max for read_file
 
 
 def _is_safe_path(path_str: str) -> Path:
@@ -130,17 +130,22 @@ async def list_tools() -> list[types.Tool]:
         types.Tool(
             name="get_git_diff",
             description=(
-                "Return the git diff of current changes. By default returns "
-                "unstaged diff. Set staged=true to get staged diff, or "
-                "staged=false and path=<file> to diff a specific file."
-            ),  
+                "Return the git diff. By default returns unstaged changes in the "
+                "working tree. Set staged=true for staged diff. Set branch=<name> "
+                "to diff the working tree against another branch (e.g. branch='main'). "
+                "Set path=<file> to diff only a specific file."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "staged": {
                         "type": "boolean",
-                        "description": "If true, show staged (cached) diff. Default: false (unstaged).",
+                        "description": "If true, show staged (cached) diff. Ignored if branch is set.",
                         "default": False,
+                    },
+                    "branch": {
+                        "type": "string",
+                        "description": "Optional: compare working tree against this branch (e.g. 'main', 'origin/main'). Runs 'git diff <branch>'.",
                     },
                     "path": {
                         "type": "string",
@@ -274,6 +279,40 @@ async def list_tools() -> list[types.Tool]:
                 "required": ["path", "content"],
             },
         ),
+        types.Tool(
+            name="edit_file",
+            description=(
+                "Make a targeted edit to a single file by replacing one exact string "
+                "with another. This is the preferred tool for small, surgical changes — "
+                "you don't need to read or rewrite the entire file. "
+                "The old_string must match the file exactly (including whitespace/indentation) "
+                "and be unique in the file. The change is applied immediately and a diff is returned. "
+                "To preview without applying, use diff_only=true."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the file, relative to project root.",
+                    },
+                    "old_string": {
+                        "type": "string",
+                        "description": "Exact text to replace (must match file contents exactly).",
+                    },
+                    "new_string": {
+                        "type": "string",
+                        "description": "Text to replace old_string with.",
+                    },
+                    "diff_only": {
+                        "type": "boolean",
+                        "description": "If true, return the diff without actually editing. Default: false.",
+                        "default": False,
+                    },
+                },
+                "required": ["path", "old_string", "new_string"],
+            },
+        ),
     ]
 
 
@@ -299,6 +338,8 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             result = _handle_search_content(arguments)
         elif name == "write_file":
             result = _handle_write_file(arguments)
+        elif name == "edit_file":
+            result = _handle_edit_file(arguments)
         else:
             raise ValueError(f"Unknown tool: '{name}'")
 
@@ -407,10 +448,17 @@ def _handle_get_git_status() -> dict:
 
 def _handle_get_git_diff(arguments: dict) -> dict:
     """Return git diff."""
-    args = ["diff"]
-    if arguments.get("staged", False):
-        args.append("--cached")
+    branch = arguments.get("branch")
     path = arguments.get("path")
+
+    args = ["diff"]
+    if branch:
+        # Diff working tree against another branch
+        args.append(branch)
+        # --cached is not meaningful when comparing branches
+    elif arguments.get("staged", False):
+        args.append("--cached")
+
     if path:
         args.append("--")
         args.append(path)
@@ -427,7 +475,8 @@ def _handle_get_git_diff(arguments: dict) -> dict:
     return {
         "diff": diff_text,
         "is_empty": len(diff_text) == 0,
-        "staged": arguments.get("staged", False),
+        "staged": arguments.get("staged", False) if not branch else None,
+        "branch": branch,
         "path": path,
     }
 
@@ -780,6 +829,93 @@ def _handle_write_file(arguments: dict) -> dict:
         "is_new": is_new,
         "diff": diff_text[:20_000] if diff_text else "",
         "size": len(content),
+    }
+
+
+def _handle_edit_file(arguments: dict) -> dict:
+    """Replace an exact string in a file and return the diff."""
+    path_str = arguments["path"]
+    old_string = arguments["old_string"]
+    new_string = arguments["new_string"]
+    diff_only = arguments.get("diff_only", False)
+
+    try:
+        resolved = _is_safe_path(path_str)
+    except ValueError as e:
+        return {"error": str(e), "ok": False}
+
+    if not resolved.exists():
+        return {"error": f"File not found: {path_str}", "ok": False}
+
+    try:
+        text = resolved.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return {"error": f"File '{path_str}' is not UTF-8 text", "ok": False}
+
+    # Find the old_string (must match exactly and be unique)
+    count = text.count(old_string)
+    if count == 0:
+        return {
+            "error": f"old_string not found in '{path_str}'. Check whitespace/indentation.",
+            "ok": False,
+        }
+    if count > 1:
+        return {
+            "error": (
+                f"old_string found {count} times in '{path_str}' — must be unique. "
+                "Include more surrounding context to make it unique."
+            ),
+            "ok": False,
+            "occurrences": count,
+        }
+
+    new_text = text.replace(old_string, new_string, 1)
+
+    if diff_only:
+        # Compute diff without writing
+        import tempfile as _tmp
+        with _tmp.NamedTemporaryFile(
+            mode="w", suffix=Path(path_str).suffix, delete=False, encoding="utf-8"
+        ) as tmp:
+            tmp.write(new_text)
+            tmp_path = tmp.name
+        try:
+            diff_result = subprocess.run(
+                ["git", "diff", "--no-index", "--", str(resolved), tmp_path],
+                capture_output=True, text=True, timeout=15,
+            )
+            diff_text = diff_result.stdout.strip() if diff_result.returncode in (0, 1) else ""
+        finally:
+            os.unlink(tmp_path)
+        return {
+            "ok": True,
+            "path": path_str,
+            "diff_only": True,
+            "diff": diff_text[:20_000],
+            "applied": False,
+        }
+
+    # Apply the edit
+    try:
+        resolved.write_text(new_text, encoding="utf-8")
+    except OSError as e:
+        return {"error": f"Cannot write '{path_str}': {e}", "ok": False}
+
+    # Show a minimal diff
+    old_lines = old_string.split("\n")
+    new_lines = new_string.split("\n")
+    diff_parts = []
+    for line in old_lines:
+        diff_parts.append(f"-{line}")
+    for line in new_lines:
+        diff_parts.append(f"+{line}")
+    diff_text = "\n".join(diff_parts)
+
+    return {
+        "ok": True,
+        "path": path_str,
+        "diff": diff_text[:20_000],
+        "applied": True,
     }
 
 

@@ -3428,6 +3428,18 @@ body {
     min-width: 0;
 }
 
+/* ══ File Assistant tool indicator ══ */
+
+.file-tool-note {
+    font-size: 11px;
+    color: #6b7280;
+    background: #f3f4f6;
+    border-radius: 4px;
+    padding: 1px 6px;
+    margin: 0 2px;
+    vertical-align: middle;
+}
+
 /* ══ Animations ══ */
 
 @keyframes spin { to { transform: rotate(360deg); } }

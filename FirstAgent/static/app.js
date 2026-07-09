@@ -851,12 +851,12 @@ const localMessagesEl   = document.getElementById('local-messages');
 const localForm         = document.getElementById('local-chat-form');
 const localInput        = document.getElementById('local-input');
 const localSendBtn      = document.getElementById('local-send-btn');
+const localClearBtn     = document.getElementById('local-clear-btn');
 const localInputHistory = createInputHistory({
     input: localInput,
     form: localForm,
     clearBtn: localClearBtn,
 });
-const localClearBtn     = document.getElementById('local-clear-btn');
 const localModelSelect  = document.getElementById('local-model-select');
 
 let localHistoryLoaded  = false;
@@ -1987,12 +1987,12 @@ const remoteForm = document.getElementById('remote-chat-form');
 const remoteInput = document.getElementById('remote-input');
 const remoteSendBtn = document.getElementById('remote-send-btn');
 const remoteStopBtn = document.getElementById('remote-stop-btn');
+const remoteClearBtn = document.getElementById('remote-clear-btn');
 const remoteInputHistory = createInputHistory({
     input: remoteInput,
     form: remoteForm,
     clearBtn: remoteClearBtn,
 });
-const remoteClearBtn = document.getElementById('remote-clear-btn');
 let remoteAbortController = null;  // for stopping in-flight generation
 const remoteStatusDot = document.getElementById('remote-status-dot');
 const remoteDiagBar = document.getElementById('remote-diag-bar');
@@ -2971,6 +2971,7 @@ async function loadSupportStatus() {
 // ── File Assistant Tab ─────────────────────────────────────────────────────────
 
 let fileFilesAffected = [];
+let fileSessionId = 'file_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
 
 const fileStatusBar    = document.getElementById('file-status-bar');
 const fileMessages     = document.getElementById('file-messages');
@@ -3049,27 +3050,66 @@ fileForm.addEventListener('submit', async (e) => {
     fileSendBtn.disabled = true;
 
     appendFileMessage('user', task);
-    const loadingEl = appendFileMessage('thinking', 'Working...');
+
+    // Create a streaming message element
+    const streamEl = document.createElement('div');
+    streamEl.className = 'message assistant';
+    fileMessages.appendChild(streamEl);
+    fileMessages.scrollTop = fileMessages.scrollHeight;
+
+    const emptyState = fileMessages.querySelector('.empty-state');
+    if (emptyState) emptyState.remove();
 
     try {
-        const resp = await fetch('/file/query', {
+        const resp = await fetch('/file/query/stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ task, session_id: 'default' }),
+            body: JSON.stringify({ task, session_id: fileSessionId }),
         });
-        const data = await resp.json();
-        loadingEl.remove();
 
-        if (data.error) {
-            appendFileMessage('assistant', `Error: ${data.error}`);
+        if (!resp.ok) {
+            streamEl.textContent = `Error: HTTP ${resp.status}`;
         } else {
-            appendFileMessage('assistant', data.answer);
-            fileFilesAffected = data.files_affected || [];
-            renderFileFilesAffected();
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';  // keep incomplete line
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    const dataStr = line.slice(6);
+                    try {
+                        const event = JSON.parse(dataStr);
+                        if (event.token) {
+                            streamEl.textContent += event.token;
+                        }
+                        if (event.tool) {
+                            // Show tool usage as a subtle indicator
+                            const toolNote = document.createElement('span');
+                            toolNote.className = 'file-tool-note';
+                            toolNote.textContent = ` 🔧 ${event.tool}`;
+                            streamEl.appendChild(toolNote);
+                        }
+                        if (event.done) {
+                            fileFilesAffected = event.files_affected || [];
+                            renderFileFilesAffected();
+                        }
+                        fileMessages.scrollTop = fileMessages.scrollHeight;
+                    } catch (e) {
+                        // skip malformed JSON
+                    }
+                }
+            }
         }
     } catch (err) {
-        loadingEl.remove();
-        appendFileMessage('assistant', `Network error: ${escapeHtml(err.message)}`);
+        streamEl.textContent = `Network error: ${escapeHtml(err.message)}`;
     }
 
     fileInput.disabled = false;
@@ -3078,6 +3118,7 @@ fileForm.addEventListener('submit', async (e) => {
 });
 
 fileClearBtn.addEventListener('click', () => {
+    fileSessionId = 'file_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
     fileFilesAffected = [];
     fileMessages.innerHTML = '<div class="empty-state">Give me a file-related task. Examples:<br>'
         + '"Find all usages of ChatAgent across the codebase"<br>'
