@@ -78,7 +78,15 @@ rag_index_status: dict = {
     "done": 0,         # файлов проиндексировано
     "current": "",     # текущий файл
     "error": "",
+    "hint": "",        # подсказка пользователю (например, как запустить Ollama)
 }
+
+OLLAMA_START_HINT = (
+    "Запустите Ollama и скачайте модель эмбеддингов:\n"
+    "  ollama serve\n"
+    "  ollama pull nomic-embed-text\n"
+    "Затем перезапустите приложение или переключите проект для повторной индексации."
+)
 
 
 def _parse_control_questions(filepath: str) -> list[dict]:
@@ -143,7 +151,7 @@ async def _index_project_docs(rag_store: RAGStore) -> None:
     except Exception as e:
         msg = f"Ollama недоступна ({OLLAMA_URL}): {e}"
         print(f"  RAG indexing ABORTED: {msg}")
-        rag_index_status.update(state="error", error=msg, current="")
+        rag_index_status.update(state="error", error=msg, current="", hint=OLLAMA_START_HINT)
         return
 
     project_root = Path(rag_store.project_path).resolve()
@@ -217,7 +225,7 @@ async def _index_project_docs(rag_store: RAGStore) -> None:
             if embedding_failures >= 2:
                 msg = f"Два сбоя эмбеддинга подряд — вероятно Ollama недоступна: {e}"
                 print(f"  RAG indexing ABORTED — {msg}")
-                rag_index_status.update(state="error", error=msg, current="")
+                rag_index_status.update(state="error", error=msg, current="", hint=OLLAMA_START_HINT)
                 return
         else:
             embedding_failures = 0  # сброс при успехе
@@ -312,7 +320,8 @@ async def lifespan(app: FastAPI):
             try:
                 await _index_project_docs(store)
             except Exception as e:
-                rag_index_status.update(state="error", error=str(e), current="")
+                hint = OLLAMA_START_HINT if "ollama" in str(e).lower() or "connect" in str(e).lower() else ""
+                rag_index_status.update(state="error", error=str(e), current="", hint=hint)
                 print(f"WARNING: background RAG indexing failed: {e}")
 
         index_task = asyncio.create_task(_index_in_background(rag_store))

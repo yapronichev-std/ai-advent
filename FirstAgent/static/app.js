@@ -3155,6 +3155,9 @@ async function pollRagIndexStatus() {
         const progress = st.total ? ` ${st.done}/${st.total}` : '…';
         const current = st.current ? ` — ${st.current}` : '';
         ragIndexBadgeText.textContent = `Индексация RAG${progress}${current}`;
+        // Убираем hint из предыдущего error-состояния
+        const oldHint = ragIndexBadge.querySelector('.rag-index-badge-hint');
+        if (oldHint) oldHint.remove();
         setTimeout(pollRagIndexStatus, 2000);
     } else if (st.state === 'error') {
         ragIndexBadge.hidden = false;
@@ -3162,6 +3165,19 @@ async function pollRagIndexStatus() {
         ragIndexBadge.classList.add('error');
         ragIndexBadgeSpinner.hidden = true;
         ragIndexBadgeText.textContent = '⚠ Индексация RAG не удалась';
+
+        // Показываем hint (подсказку), если бэкенд её передал
+        let hintEl = ragIndexBadge.querySelector('.rag-index-badge-hint');
+        if (st.hint) {
+            if (!hintEl) {
+                hintEl = document.createElement('div');
+                hintEl.className = 'rag-index-badge-hint';
+                ragIndexBadge.appendChild(hintEl);
+            }
+            hintEl.textContent = st.hint;
+        } else if (hintEl) {
+            hintEl.remove();
+        }
     } else if (st.state === 'done' && ragIndexSawIndexing) {
         // показываем «готово» только если застали процесс, затем прячем
         ragIndexBadge.hidden = false;
