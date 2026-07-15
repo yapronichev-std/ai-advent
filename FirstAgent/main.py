@@ -133,6 +133,19 @@ async def _index_project_docs(rag_store: RAGStore) -> None:
     Skips sources that are already indexed to avoid duplicates across restarts.
     """
     rag_index_status.update(state="indexing", total=0, done=0, current="", error="")
+
+    # ── Quick health check: убедимся, что Ollama доступна ───────────────────
+    OLLAMA_URL = "http://localhost:11434"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.0)) as client:
+            resp = await client.get(f"{OLLAMA_URL}/api/tags")
+            resp.raise_for_status()
+    except Exception as e:
+        msg = f"Ollama недоступна ({OLLAMA_URL}): {e}"
+        print(f"  RAG indexing ABORTED: {msg}")
+        rag_index_status.update(state="error", error=msg, current="")
+        return
+
     project_root = Path(rag_store.project_path).resolve()
     docs_to_index: list[tuple[str, str, str]] = []  # (filepath, source_label, strategy)
 
@@ -185,6 +198,7 @@ async def _index_project_docs(rag_store: RAGStore) -> None:
     print(f"Indexing {len(new_docs)} new project documentation file(s) into RAG...")
     rag_index_status.update(total=len(new_docs))
     indexed = 0
+    embedding_failures = 0
     for filepath, source, strategy in new_docs:
         rag_index_status.update(current=source)
         try:
@@ -199,6 +213,14 @@ async def _index_project_docs(rag_store: RAGStore) -> None:
             indexed += 1
         except Exception as e:
             print(f"  FAIL  {source}: {e}")
+            embedding_failures += 1
+            if embedding_failures >= 2:
+                msg = f"Два сбоя эмбеддинга подряд — вероятно Ollama недоступна: {e}"
+                print(f"  RAG indexing ABORTED — {msg}")
+                rag_index_status.update(state="error", error=msg, current="")
+                return
+        else:
+            embedding_failures = 0  # сброс при успехе
         rag_index_status["done"] += 1
 
     rag_index_status.update(state="done", current="")
