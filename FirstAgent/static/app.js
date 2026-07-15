@@ -3126,3 +3126,54 @@ fileClearBtn.addEventListener('click', () => {
         + '"Generate a CHANGELOG.md from recent git commits"</div>';
     renderFileFilesAffected();
 });
+// ═══════════════════════════════════════════════════════════════════════════
+// RAG indexing status badge (в шапке, виден на всех вкладках)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const ragIndexBadge = document.getElementById('rag-index-badge');
+const ragIndexBadgeText = document.getElementById('rag-index-badge-text');
+const ragIndexBadgeSpinner = document.getElementById('rag-index-badge-spinner');
+
+let ragIndexSawIndexing = false;
+
+async function pollRagIndexStatus() {
+    let st;
+    try {
+        const res = await fetch('/rag/index-status');
+        st = await res.json();
+    } catch (e) {
+        // сервер ещё поднимается или сеть — повторим позже
+        setTimeout(pollRagIndexStatus, 5000);
+        return;
+    }
+
+    if (st.state === 'indexing') {
+        ragIndexSawIndexing = true;
+        ragIndexBadge.hidden = false;
+        ragIndexBadge.classList.remove('done', 'error');
+        ragIndexBadgeSpinner.hidden = false;
+        const progress = st.total ? ` ${st.done}/${st.total}` : '…';
+        const current = st.current ? ` — ${st.current}` : '';
+        ragIndexBadgeText.textContent = `Индексация RAG${progress}${current}`;
+        setTimeout(pollRagIndexStatus, 2000);
+    } else if (st.state === 'error') {
+        ragIndexBadge.hidden = false;
+        ragIndexBadge.classList.remove('done');
+        ragIndexBadge.classList.add('error');
+        ragIndexBadgeSpinner.hidden = true;
+        ragIndexBadgeText.textContent = '⚠ Индексация RAG не удалась';
+    } else if (st.state === 'done' && ragIndexSawIndexing) {
+        // показываем «готово» только если застали процесс, затем прячем
+        ragIndexBadge.hidden = false;
+        ragIndexBadge.classList.remove('error');
+        ragIndexBadge.classList.add('done');
+        ragIndexBadgeSpinner.hidden = true;
+        ragIndexBadgeText.textContent = `✓ RAG готов (${st.rag_chunks} chunks)`;
+        setTimeout(() => { ragIndexBadge.hidden = true; }, 6000);
+    } else if (st.state === 'idle') {
+        // индексация ещё не началась (lifespan в процессе) — проверим снова
+        setTimeout(pollRagIndexStatus, 2000);
+    }
+}
+
+pollRagIndexStatus();

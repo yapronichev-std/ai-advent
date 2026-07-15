@@ -71,6 +71,15 @@ support_agent: SupportAgent | None = None
 file_assistant: FileAssistant | None = None
 control_questions: list[dict] = []
 
+# ── RAG indexing status (отдаётся в UI через GET /rag/index-status) ──────────
+rag_index_status: dict = {
+    "state": "idle",   # idle | indexing | done | error
+    "total": 0,        # файлов к индексации
+    "done": 0,         # файлов проиндексировано
+    "current": "",     # текущий файл
+    "error": "",
+}
+
 
 def _parse_control_questions(filepath: str) -> list[dict]:
     """Parse контрольные вопросы.txt into a list of {id, question, expected_answer} dicts."""
@@ -123,6 +132,7 @@ async def _index_project_docs(rag_store: RAGStore) -> None:
     Uses the active project path from rag_store.
     Skips sources that are already indexed to avoid duplicates across restarts.
     """
+    rag_index_status.update(state="indexing", total=0, done=0, current="", error="")
     project_root = Path(rag_store.project_path).resolve()
     docs_to_index: list[tuple[str, str, str]] = []  # (filepath, source_label, strategy)
 
@@ -147,6 +157,7 @@ async def _index_project_docs(rag_store: RAGStore) -> None:
 
     if not docs_to_index:
         print("No project documentation files found to index into RAG")
+        rag_index_status.update(state="done", current="")
         return
 
     # ── Determine which sources are already indexed ─────────────────────────
@@ -168,23 +179,29 @@ async def _index_project_docs(rag_store: RAGStore) -> None:
 
     if not new_docs:
         print(f"Project docs already indexed ({len(docs_to_index)} sources up to date)")
+        rag_index_status.update(state="done", current="")
         return
 
     print(f"Indexing {len(new_docs)} new project documentation file(s) into RAG...")
+    rag_index_status.update(total=len(new_docs))
     indexed = 0
     for filepath, source, strategy in new_docs:
+        rag_index_status.update(current=source)
         try:
             text = Path(filepath).read_text(encoding="utf-8")
             # Skip very large files (> 1MB) to avoid overwhelming RAG
             if len(text) > 1_000_000:
                 print(f"  SKIP (too large, {len(text)} bytes): {source}")
+                rag_index_status["done"] += 1
                 continue
             result = await rag_store.add_document(text=text, source=source, strategy=strategy)
             print(f"  OK  {source} → {result.get('chunks', 0)} chunks [{result.get('strategy', strategy)}]")
             indexed += 1
         except Exception as e:
             print(f"  FAIL  {source}: {e}")
+        rag_index_status["done"] += 1
 
+    rag_index_status.update(state="done", current="")
     print(f"Project docs indexed: {indexed}/{len(new_docs)} new")
 
 
@@ -266,9 +283,18 @@ async def lifespan(app: FastAPI):
         print(f"WARNING: RAGStore unavailable: {e}")
         rag_store = None
 
-    # ── Auto-index project documentation into RAG ────────────────────────────
+    # ── Auto-index project documentation into RAG (в фоне, чтобы не блокировать старт) ──
+    index_task: asyncio.Task | None = None
     if rag_store:
-        await _index_project_docs(rag_store)
+        async def _index_in_background(store: RAGStore) -> None:
+            try:
+                await _index_project_docs(store)
+            except Exception as e:
+                rag_index_status.update(state="error", error=str(e), current="")
+                print(f"WARNING: background RAG indexing failed: {e}")
+
+        index_task = asyncio.create_task(_index_in_background(rag_store))
+        print("RAG indexing started in background (server is available immediately)")
 
     # ── Code Review Agent ──────────────────────────────────────────────────────
     global review_agent
@@ -319,8 +345,29 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # ── Shutdown cleanup ─────────────────────────────────────────────────────
+    # Отменяем фоновую индексацию, если ещё идёт
+    if index_task and not index_task.done():
+        index_task.cancel()
+        try:
+            await index_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    # MCP disconnect: anyio cancel scopes внутри MCP-клиентов ломаются при
+    # отмене lifespan-таска uvicorn'ом. Отключаем их тихо — соединения
+    # всё равно закроются по TCP timeout при выходе процесса.
     if mcp_client:
-        await mcp_client.disconnect()
+        import logging as _logging
+        _mcp_logger = _logging.getLogger("mcp_multi")
+        _prev_level = _mcp_logger.level
+        _mcp_logger.setLevel(_logging.ERROR)
+        try:
+            await mcp_client.disconnect()
+        except (asyncio.CancelledError, Exception):
+            pass
+        finally:
+            _mcp_logger.setLevel(_prev_level)
 
 
 app = FastAPI(title="Chat Agent", lifespan=lifespan)
@@ -482,6 +529,15 @@ async def clear_history(user_id: str = Query(default="default")):
 
 
 # ── Project switching ───────────────────────────────────────────────────────────
+
+@app.get("/rag/index-status")
+async def get_rag_index_status():
+    """Return the current state of background RAG documentation indexing."""
+    return {
+        **rag_index_status,
+        "rag_chunks": rag_store.count() if rag_store else 0,
+    }
+
 
 @app.get("/project")
 async def get_project_info():
