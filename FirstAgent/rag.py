@@ -249,7 +249,13 @@ def compare_strategies(text: str, source: str = "") -> dict:
 # ── Embedding ─────────────────────────────────────────────────────────────────
 
 async def _get_embedding(text: str) -> list[float]:
-    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+    # Tight timeouts, no retries — health check уже сделан, эмбеддинг должен
+    # отрабатывать быстро. Зависание → сразу ConnectionError без перебора IPv4/IPv6.
+    transport = httpx.AsyncHTTPTransport(retries=0)
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(10.0, connect=5.0),
+        transport=transport,
+    ) as client:
         resp = await client.post(OLLAMA_URL, json={"model": EMBED_MODEL, "prompt": text})
         resp.raise_for_status()
         return resp.json()["embedding"]

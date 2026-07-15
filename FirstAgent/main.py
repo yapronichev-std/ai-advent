@@ -89,6 +89,19 @@ OLLAMA_START_HINT = (
 )
 
 
+async def _check_ollama() -> str:
+    """Проверить доступность Ollama. Возвращает пустую строку если OK, иначе сообщение об ошибке."""
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection("127.0.0.1", 11434), timeout=3.0
+        )
+        writer.close()
+        await writer.wait_closed()
+        return ""
+    except Exception as e:
+        return f"Ollama недоступна (localhost:11434): {e}"
+
+
 def _parse_control_questions(filepath: str) -> list[dict]:
     """Parse контрольные вопросы.txt into a list of {id, question, expected_answer} dicts."""
     import re
@@ -143,15 +156,10 @@ async def _index_project_docs(rag_store: RAGStore) -> None:
     rag_index_status.update(state="indexing", total=0, done=0, current="", error="")
 
     # ── Quick health check: убедимся, что Ollama доступна ───────────────────
-    OLLAMA_URL = "http://localhost:11434"
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.0)) as client:
-            resp = await client.get(f"{OLLAMA_URL}/api/tags")
-            resp.raise_for_status()
-    except Exception as e:
-        msg = f"Ollama недоступна ({OLLAMA_URL}): {e}"
-        print(f"  RAG indexing ABORTED: {msg}")
-        rag_index_status.update(state="error", error=msg, current="", hint=OLLAMA_START_HINT)
+    err = await _check_ollama()
+    if err:
+        print(f"  RAG indexing ABORTED: {err}")
+        rag_index_status.update(state="error", error=err, current="", hint=OLLAMA_START_HINT)
         return
 
     project_root = Path(rag_store.project_path).resolve()
@@ -695,6 +703,13 @@ async def switch_project_stream(request: dict):
         if rag_store:
             rag_store.set_project(str(new_path))
             if rag_store.count() == 0:
+                # ── Health check: Ollama должна быть доступна ──────────────
+                ollama_err = await _check_ollama()
+                if ollama_err:
+                    rag_index_status.update(state="error", error=ollama_err, current="", hint=OLLAMA_START_HINT)
+                    yield _sse({"type": "error", "message": ollama_err})
+                    return
+
                 # Collect and index — inline for progress events
                 project_root = new_path
                 docs_to_index: list[tuple[str, str, str]] = []
@@ -711,20 +726,32 @@ async def switch_project_stream(request: dict):
                             docs_to_index.append((str(fpath), str(fpath.relative_to(project_root)), "fixed"))
 
                 total = len(docs_to_index)
+                rag_index_status.update(state="indexing", total=total, done=0, current="", error="")
                 yield _sse({"type": "progress", "stage": "rag", "message": f"Indexing {total} docs...",
                               "current": 0, "total": total})
 
+                embedding_failures = 0
                 for i, (filepath, source, strategy) in enumerate(docs_to_index):
+                    rag_index_status.update(current=source)
                     try:
                         text = Path(filepath).read_text(encoding="utf-8")
                         if len(text) > 1_000_000:
+                            rag_index_status["done"] += 1
                             continue
                         await rag_store.add_document(text=text, source=source, strategy=strategy)
                         yield _sse({"type": "progress", "stage": "rag",
                                       "message": f"Indexed: {source}",
                                       "current": i + 1, "total": total})
-                    except Exception:
-                        pass
+                        embedding_failures = 0
+                    except Exception as e:
+                        embedding_failures += 1
+                        if embedding_failures >= 2:
+                            msg = f"Два сбоя эмбеддинга подряд — Ollama недоступна: {e}"
+                            rag_index_status.update(state="error", error=msg, current="", hint=OLLAMA_START_HINT)
+                            yield _sse({"type": "error", "message": msg})
+                            return
+                    rag_index_status["done"] += 1
+                rag_index_status.update(state="done", current="")
             else:
                 yield _sse({"type": "progress", "stage": "rag",
                               "message": f"Already indexed ({rag_store.count()} chunks) — skipping",
