@@ -153,7 +153,7 @@ async def _index_project_docs(rag_store: RAGStore) -> None:
     Uses the active project path from rag_store.
     Skips sources that are already indexed to avoid duplicates across restarts.
     """
-    rag_index_status.update(state="indexing", total=0, done=0, current="", error="")
+    rag_index_status.update(state="indexing", total=0, done=0, current="", error="", hint="")
 
     # ── Quick health check: убедимся, что Ollama доступна ───────────────────
     err = await _check_ollama()
@@ -726,7 +726,7 @@ async def switch_project_stream(request: dict):
                             docs_to_index.append((str(fpath), str(fpath.relative_to(project_root)), "fixed"))
 
                 total = len(docs_to_index)
-                rag_index_status.update(state="indexing", total=total, done=0, current="", error="")
+                rag_index_status.update(state="indexing", total=total, done=0, current="", error="", hint="")
                 yield _sse({"type": "progress", "stage": "rag", "message": f"Indexing {total} docs...",
                               "current": 0, "total": total})
 
