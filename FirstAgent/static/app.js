@@ -3134,8 +3134,6 @@ const ragIndexBadge = document.getElementById('rag-index-badge');
 const ragIndexBadgeText = document.getElementById('rag-index-badge-text');
 const ragIndexBadgeSpinner = document.getElementById('rag-index-badge-spinner');
 
-let ragIndexSawIndexing = false;
-
 async function pollRagIndexStatus() {
     let st;
     try {
@@ -3148,7 +3146,6 @@ async function pollRagIndexStatus() {
     }
 
     if (st.state === 'indexing') {
-        ragIndexSawIndexing = true;
         ragIndexBadge.hidden = false;
         ragIndexBadge.classList.remove('done', 'error');
         ragIndexBadgeSpinner.hidden = false;
@@ -3178,17 +3175,25 @@ async function pollRagIndexStatus() {
         } else if (hintEl) {
             hintEl.remove();
         }
-    } else if (st.state === 'done' && ragIndexSawIndexing) {
-        // показываем «готово» только если застали процесс, затем прячем
+    } else if (st.state === 'done') {
+        // Индексация завершена — показываем результат
         ragIndexBadge.hidden = false;
         ragIndexBadge.classList.remove('error');
         ragIndexBadge.classList.add('done');
         ragIndexBadgeSpinner.hidden = true;
         ragIndexBadgeText.textContent = `✓ RAG готов (${st.rag_chunks} chunks)`;
+        // Убираем hint из предыдущего error-состояния
+        const oldHint = ragIndexBadge.querySelector('.rag-index-badge-hint');
+        if (oldHint) oldHint.remove();
+        // Прячем бейдж через 6s, но продолжаем редкий поллинг (на случай смены проекта)
         setTimeout(() => { ragIndexBadge.hidden = true; }, 6000);
+        setTimeout(pollRagIndexStatus, 30_000);
     } else if (st.state === 'idle') {
         // индексация ещё не началась (lifespan в процессе) — проверим снова
         setTimeout(pollRagIndexStatus, 2000);
+    } else {
+        // Неизвестное состояние — продолжаем поллинг
+        setTimeout(pollRagIndexStatus, 5000);
     }
 }
 

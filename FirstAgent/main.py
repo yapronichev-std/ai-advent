@@ -753,6 +753,7 @@ async def switch_project_stream(request: dict):
                     rag_index_status["done"] += 1
                 rag_index_status.update(state="done", current="")
             else:
+                rag_index_status.update(state="done", current="")
                 yield _sse({"type": "progress", "stage": "rag",
                               "message": f"Already indexed ({rag_store.count()} chunks) — skipping",
                               "current": 1, "total": 1})
