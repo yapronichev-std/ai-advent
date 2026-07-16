@@ -230,18 +230,26 @@ async def _index_project_docs_inner(rag_store: RAGStore) -> None:
     embedding_failures = 0
     for filepath, source, strategy in new_docs:
         rag_index_status.update(current=source)
+        activity.set_current(f"Индексация: {source}...", agent="system")
         try:
             text = Path(filepath).read_text(encoding="utf-8")
             # Skip very large files (> 1MB) to avoid overwhelming RAG
             if len(text) > 1_000_000:
                 print(f"  SKIP (too large, {len(text)} bytes): {source}")
+                activity.emit("rag_index", f"Пропущен (слишком большой): {source}", agent="system",
+                              detail={"source": source, "size": len(text)})
                 rag_index_status["done"] += 1
                 continue
             result = await rag_store.add_document(text=text, source=source, strategy=strategy)
             print(f"  OK  {source} → {result.get('chunks', 0)} chunks [{result.get('strategy', strategy)}]")
+            activity.emit("rag_index", f"Проиндексирован: {source} ({result.get('chunks', 0)} чанков)",
+                          agent="system",
+                          detail={"source": source, "chunks": result.get("chunks", 0)})
             indexed += 1
         except Exception as e:
             print(f"  FAIL  {source}: {e}")
+            activity.emit("rag_index", f"Ошибка индексации: {source}", agent="system",
+                          detail={"source": source, "error": str(e)})
             embedding_failures += 1
             if embedding_failures >= 2:
                 msg = f"Два сбоя эмбеддинга подряд — вероятно Ollama недоступна: {e}"
@@ -767,17 +775,26 @@ async def switch_project_stream(request: dict):
                 embedding_failures = 0
                 for i, (filepath, source, strategy) in enumerate(docs_to_index):
                     rag_index_status.update(current=source)
+                    activity.set_current(f"Индексация: {source}...", agent="system")
                     try:
                         text = Path(filepath).read_text(encoding="utf-8")
                         if len(text) > 1_000_000:
+                            activity.emit("rag_index", f"Пропущен (слишком большой): {source}", agent="system",
+                                          detail={"source": source, "size": len(text)})
                             rag_index_status["done"] += 1
                             continue
-                        await rag_store.add_document(text=text, source=source, strategy=strategy)
+                        result = await rag_store.add_document(text=text, source=source, strategy=strategy)
+                        activity.emit("rag_index",
+                                      f"Проиндексирован: {source} ({result.get('chunks', 0)} чанков)",
+                                      agent="system",
+                                      detail={"source": source, "chunks": result.get("chunks", 0)})
                         yield _sse({"type": "progress", "stage": "rag",
                                       "message": f"Indexed: {source}",
                                       "current": i + 1, "total": total})
                         embedding_failures = 0
                     except Exception as e:
+                        activity.emit("rag_index", f"Ошибка индексации: {source}", agent="system",
+                                      detail={"source": source, "error": str(e)})
                         embedding_failures += 1
                         if embedding_failures >= 2:
                             msg = f"Два сбоя эмбеддинга подряд — Ollama недоступна: {e}"
@@ -2301,10 +2318,24 @@ async def add_rag_document_stream(request: RAGDocumentRequest):
     fmt = request.format if request.format in ("auto", "text", "html", "mhtml") else "auto"
 
     async def event_gen():
-        async for event in rag_store.add_document_stream(
-            request.text, source=request.source, strategy=strategy, format=fmt
-        ):
-            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        src = request.source or "документ"
+        activity.set_current(f"Индексация: {src}...", agent="system")
+        try:
+            async for event in rag_store.add_document_stream(
+                request.text, source=request.source, strategy=strategy, format=fmt
+            ):
+                if event.get("type") == "done":
+                    activity.emit("rag_index",
+                                  f"Проиндексирован: {event.get('source') or src} ({event.get('chunks', 0)} чанков)",
+                                  agent="system",
+                                  detail={"source": event.get("source") or src,
+                                          "chunks": event.get("chunks", 0)})
+                elif event.get("type") == "error":
+                    activity.emit("rag_index", f"Ошибка индексации: {src}", agent="system",
+                                  detail={"source": src, "error": event.get("message", "")})
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        finally:
+            activity.clear_current()
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
