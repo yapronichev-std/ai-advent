@@ -23,6 +23,8 @@ from rag import RAGStore, rewrite_query, rerank_results
 
 logger = logging.getLogger(__name__)
 
+from activity import activity
+
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
 DEFAULT_MODEL = "deepseek-direct/deepseek-chat"
@@ -197,6 +199,31 @@ class CodeReviewAgent:
             ReviewResult со структурированным ревью
         """
         t0 = time.monotonic()
+        changed_files = changed_files or []
+        activity.set_current(f"CodeReview: {pr_title[:40] or head_branch or 'diff'}...", agent="review")
+        activity.emit("code_review", f"Ревью: {pr_title[:60] or head_branch or 'локальный diff'}",
+                      agent="review", detail={"files": len(changed_files)})
+        try:
+            return await self._review_pr_inner(
+                pr_title=pr_title, pr_description=pr_description,
+                base_branch=base_branch, head_branch=head_branch,
+                diff_text=diff_text, changed_files=changed_files,
+                user_id=user_id, t0=t0,
+            )
+        finally:
+            activity.clear_current()
+
+    async def _review_pr_inner(
+        self,
+        pr_title: str = "",
+        pr_description: str = "",
+        base_branch: str = "main",
+        head_branch: str = "",
+        diff_text: str = "",
+        changed_files: list[str] | None = None,
+        user_id: str = "review",
+        t0: float = 0.0,
+    ) -> ReviewResult:
         changed_files = changed_files or []
 
         if not diff_text.strip():

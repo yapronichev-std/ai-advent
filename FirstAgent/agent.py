@@ -8,6 +8,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+from activity import activity
 from config import load_system_prompt
 from diagram_pipeline import DiagramPipeline
 from invariants import InvariantStore
@@ -75,6 +76,13 @@ class ChatAgent:
         self.model = model_id
 
     async def send_message(self, user_message: str) -> tuple[str, dict, list[str]]:
+        activity.set_current("Обработка запроса...", agent="chat")
+        try:
+            return await self._send_message_inner(user_message)
+        finally:
+            activity.clear_current()
+
+    async def _send_message_inner(self, user_message: str) -> tuple[str, dict, list[str]]:
         command_response = await self._handle_command(user_message)
         if command_response is not None:
             self.history.append({"role": "user", "content": user_message})
@@ -92,9 +100,12 @@ class ChatAgent:
         # Проверяем, является ли запрос диаграммным, и запускаем пайплайн
         if self.diagram_pipeline:
             t0 = time.monotonic()
+            activity.set_current("Проверка запроса на диаграмму...", agent="chat")
             is_diagram = await self._classify_as_diagram(user_message)
             if is_diagram:
                 logger.info("[agent] diagram request detected — running pipeline")
+                activity.emit("diagram", "Запуск пайплайна диаграммы", agent="chat")
+                activity.set_current("Генерация диаграммы...", agent="chat")
                 self.history.append({"role": "user", "content": user_message})
                 pipeline_response, diagram_urls = await self.diagram_pipeline.execute(user_message)
                 self.history.append({"role": "assistant", "content": pipeline_response})
@@ -118,6 +129,8 @@ class ChatAgent:
         rag_no_context = False
         if self.rag_store:
             try:
+                activity.set_current("Поиск в документации (RAG)...", agent="chat")
+                activity.emit("rag_retrieve", "Поиск релевантных документов...", agent="chat")
                 search_query = rewrite_query(user_message, strategy="none")  # "none" — raw query, query rewrite degrades retrieval for some queries
                 logger.debug("[agent] RAG query rewritten: %r → %r", user_message[:80], search_query[:80])
                 raw_results = await self.rag_store.retrieve(search_query, top_k=35)
@@ -178,10 +191,13 @@ class ChatAgent:
                     rag_no_context = True
                 logger.debug("[agent] RAG retrieved %d → filtered+reranked → %d chunks",
                              rerank["before_count"], rerank["after_count"])
+                activity.emit("rag_retrieve", f"Найдено {len(rag_results)} чанков", agent="chat",
+                              detail={"count": len(rag_results)})
             except Exception as exc:
                 logger.warning("[agent] RAG retrieval failed: %s", exc)
 
         messages = self._build_messages(rag_results=rag_results, rag_no_context=rag_no_context)
+        activity.set_current("Запрос к LLM...", agent="chat")
         t0 = time.monotonic()
         response_text, usage, diagram_urls = await self._call_api(messages)
         usage["response_time_ms"] = round((time.monotonic() - t0) * 1000)
@@ -506,6 +522,7 @@ class ChatAgent:
         self._save_tokens()
 
     async def _compress_history(self) -> None:
+        activity.emit("compress", "Сжатие истории диалога", agent="chat")
         to_summarize = self.history[:-MAX_HISTORY]
         self.history = self.history[-MAX_HISTORY:]
 
@@ -1051,6 +1068,9 @@ class ChatAgent:
                     payload["tools"] = tools
                     payload["tool_choice"] = "auto"
 
+                activity.emit("llm_call", f"Запрос к {actual_model}", agent="chat",
+                              detail={"model": actual_model})
+                activity.set_current(f"Запрос к LLM ({actual_model})...", agent="chat")
                 for attempt in range(6):
                     response = await client.post(api_url, headers=headers, json=payload)
                     if response.status_code == 429:
@@ -1081,6 +1101,9 @@ class ChatAgent:
                     for tool_call in message.get("tool_calls", []):
                         fn = tool_call["function"]
                         arguments = json.loads(fn["arguments"]) if isinstance(fn["arguments"], str) else fn["arguments"]
+                        activity.emit("tool_call", f"Вызов инструмента {fn['name']}", agent="chat",
+                                      detail={"tool": fn["name"]})
+                        activity.set_current(f"Инструмент: {fn['name']}...", agent="chat")
                         result = await self.mcp_client.call_tool(fn["name"], arguments)
 
                         # Extract diagram URLs and strip heavy fields before sending to LLM

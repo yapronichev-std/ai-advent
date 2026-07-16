@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
+from activity import activity
 from agent import ChatAgent
 from code_review import CodeReviewAgent
 from config import load_system_prompt, save_system_prompt
@@ -148,6 +149,15 @@ def get_agent(user_id: str) -> ChatAgent:
 
 
 async def _index_project_docs(rag_store: RAGStore) -> None:
+    """Auto-index project docs into RAG + activity-события для панели активности."""
+    activity.set_current("Индексация документации проекта...", agent="system")
+    try:
+        await _index_project_docs_inner(rag_store)
+    finally:
+        activity.clear_current()
+
+
+async def _index_project_docs_inner(rag_store: RAGStore) -> None:
     """Auto-index README.md, CLAUDE.md and all text files from docs/ into RAG.
 
     Uses the active project path from rag_store.
@@ -160,6 +170,7 @@ async def _index_project_docs(rag_store: RAGStore) -> None:
     if err:
         print(f"  RAG indexing ABORTED: {err}")
         rag_index_status.update(state="error", error=err, current="", hint=OLLAMA_START_HINT)
+        activity.emit("rag_index", "Индексация прервана: Ollama недоступна", agent="system")
         return
 
     project_root = Path(rag_store.project_path).resolve()
@@ -213,6 +224,8 @@ async def _index_project_docs(rag_store: RAGStore) -> None:
 
     print(f"Indexing {len(new_docs)} new project documentation file(s) into RAG...")
     rag_index_status.update(total=len(new_docs))
+    activity.emit("rag_index", f"Индексация {len(new_docs)} файлов документации...", agent="system",
+                  detail={"total": len(new_docs)})
     indexed = 0
     embedding_failures = 0
     for filepath, source, strategy in new_docs:
@@ -234,12 +247,15 @@ async def _index_project_docs(rag_store: RAGStore) -> None:
                 msg = f"Два сбоя эмбеддинга подряд — вероятно Ollama недоступна: {e}"
                 print(f"  RAG indexing ABORTED — {msg}")
                 rag_index_status.update(state="error", error=msg, current="", hint=OLLAMA_START_HINT)
+                activity.emit("rag_index", "Индексация прервана: сбои эмбеддинга", agent="system")
                 return
         else:
             embedding_failures = 0  # сброс при успехе
         rag_index_status["done"] += 1
 
     rag_index_status.update(state="done", current="")
+    activity.emit("rag_index", f"Проиндексировано {indexed}/{len(new_docs)} файлов", agent="system",
+                  detail={"indexed": indexed, "total": len(new_docs)})
     print(f"Project docs indexed: {indexed}/{len(new_docs)} new")
 
 
@@ -381,6 +397,8 @@ async def lifespan(app: FastAPI):
     global control_questions
     control_questions = _parse_control_questions("docs/горчев/контрольные вопросы.txt")
     print(f"Control questions loaded: {len(control_questions)}")
+
+    activity.emit("system", "Приложение запущено", agent="system")
 
     yield
 
@@ -578,6 +596,12 @@ async def get_rag_index_status():
     }
 
 
+@app.get("/activity")
+async def get_activity(since: int = Query(default=0)):
+    """Return recent activity events and current agent action (for the bottom panel)."""
+    return activity.get_state(since=since)
+
+
 @app.get("/project")
 async def get_project_info():
     """Return current project root, branch, and indexed doc count."""
@@ -684,6 +708,16 @@ async def switch_project_stream(request: dict):
         raise HTTPException(status_code=400, detail=f"Not a directory: {new_path}")
 
     async def event_stream():
+        activity.set_current(f"Переключение проекта: {new_path.name}...", agent="system")
+        activity.emit("project_switch", f"Переключение на {new_path.name}", agent="system",
+                      detail={"path": str(new_path)})
+        try:
+            async for chunk in _switch_project_events(new_path):
+                yield chunk
+        finally:
+            activity.clear_current()
+
+    async def _switch_project_events(new_path):
         # ── Stage 1: Git reconnect ────────────────────────────────────────
         yield _sse({"type": "progress", "stage": "git", "message": "Reconnecting git...",
                       "current": 0, "total": 1})
@@ -752,6 +786,8 @@ async def switch_project_stream(request: dict):
                             return
                     rag_index_status["done"] += 1
                 rag_index_status.update(state="done", current="")
+                activity.emit("rag_index", f"Проиндексировано {total} файлов документации", agent="system",
+                              detail={"total": total})
             else:
                 rag_index_status.update(state="done", current="")
                 yield _sse({"type": "progress", "stage": "rag",

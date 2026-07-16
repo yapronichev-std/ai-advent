@@ -3198,3 +3198,110 @@ async function pollRagIndexStatus() {
 }
 
 pollRagIndexStatus();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Activity footer (глобальная панель активности агента)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const activityFooter = document.getElementById('activity-footer');
+const activityBar = document.getElementById('activity-bar');
+const activitySpinner = document.getElementById('activity-spinner');
+const activityText = document.getElementById('activity-text');
+const activityLog = document.getElementById('activity-log');
+const activityLogInner = document.getElementById('activity-log-inner');
+
+let activityExpanded = false;
+let activityLatestId = 0;
+
+activityBar.addEventListener('click', () => {
+    activityExpanded = !activityExpanded;
+    activityLog.hidden = !activityExpanded;
+    activityFooter.classList.toggle('open', activityExpanded);
+    if (activityExpanded) {
+        activityLog.scrollTop = activityLog.scrollHeight;
+    }
+});
+
+function formatActivityTime(isoString) {
+    const d = new Date(isoString);
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const ss = String(d.getSeconds()).padStart(2, '0');
+    return `${hh}:${mm}:${ss}`;
+}
+
+async function pollActivity() {
+    let state;
+    try {
+        const res = await fetch(`/activity?since=${activityLatestId}`);
+        if (!res.ok) throw new Error(res.status);
+        state = await res.json();
+    } catch (e) {
+        // сервер перезапускается или недоступен — повторим позже
+        setTimeout(pollActivity, 3000);
+        return;
+    }
+
+    // Сервер перезапустился (deque сброшен) — сбрасываем курсор
+    if (state.latest_id < activityLatestId) {
+        activityLatestId = 0;
+    }
+
+    // ── Текущее действие (статус-бар) ──
+    if (state.current_action) {
+        activitySpinner.hidden = false;
+        activityText.textContent = state.current_action.message;
+        activityBar.classList.add('busy');
+    } else {
+        activitySpinner.hidden = true;
+        activityText.textContent = 'Готов';
+        activityBar.classList.remove('busy');
+    }
+
+    // ── Новые события в лог ──
+    if (state.events && state.events.length > 0) {
+        // Автоскролл только если лог уже внизу (или скрыт)
+        const atBottom = activityLog.hidden ||
+            (activityLog.scrollTop + activityLog.clientHeight >= activityLog.scrollHeight - 24);
+
+        for (const evt of state.events) {
+            const item = document.createElement('div');
+            item.className = 'activity-log-item';
+
+            const ts = document.createElement('span');
+            ts.className = 'activity-log-ts';
+            ts.textContent = formatActivityTime(evt.ts);
+
+            const agentBadge = document.createElement('span');
+            agentBadge.className = 'activity-log-agent ' + (evt.agent || '');
+            agentBadge.textContent = evt.agent || '?';
+
+            const msg = document.createElement('span');
+            msg.className = 'activity-log-msg';
+            msg.textContent = evt.message;
+            msg.title = evt.message;
+
+            item.append(ts, agentBadge, msg);
+            activityLogInner.appendChild(item);
+        }
+
+        // Ограничиваем DOM (как deque maxlen=200 на бэкенде)
+        while (activityLogInner.children.length > 200) {
+            activityLogInner.removeChild(activityLogInner.firstChild);
+        }
+
+        if (atBottom) {
+            activityLog.scrollTop = activityLog.scrollHeight;
+        }
+    }
+
+    if (state.latest_id > activityLatestId) {
+        activityLatestId = state.latest_id;
+    }
+
+    // 1.5s при активности, 3s в простое
+    const interval = activityBar.classList.contains('busy') ? 1500 : 3000;
+    setTimeout(pollActivity, interval);
+}
+
+pollActivity();

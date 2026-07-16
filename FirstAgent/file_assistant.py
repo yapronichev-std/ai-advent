@@ -16,6 +16,8 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+from activity import activity
+
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
 MAX_TOOL_RESULT_CHARS = 10_000
@@ -91,6 +93,8 @@ class FileAssistant:
             dict with keys: answer, files_affected, usage, elapsed_ms, error
         """
         t0 = time.monotonic()
+        activity.set_current(f"FileAssistant: {task[:60]}...", agent="file")
+        activity.emit("file_assistant", f"Задача: {task[:80]}", agent="file")
 
         session = self._get_session(session_id)
         session.append({"role": "user", "content": task})
@@ -123,6 +127,8 @@ class FileAssistant:
                 "elapsed_ms": elapsed_ms,
                 "error": str(exc),
             }
+        finally:
+            activity.clear_current()
 
     async def _call_api(self, messages: list[dict]) -> tuple[str, dict, list[str]]:
         """Dynamic tool-calling loop.
@@ -205,6 +211,9 @@ class FileAssistant:
                             fn["name"],
                             ", ".join(f"{k}={v!r}" for k, v in arguments.items()),
                         )
+                        activity.emit("tool_call", f"FileAssistant: {fn['name']}", agent="file",
+                                      detail={"tool": fn["name"]})
+                        activity.set_current(f"FileAssistant → {fn['name']}...", agent="file")
                         result = await self.mcp_client.call_tool(fn["name"], arguments)
 
                         # Track files affected by write operations
@@ -239,6 +248,8 @@ class FileAssistant:
         {"done": True, "files_affected": [...], "usage": {...}} on completion.
         """
         t0 = time.monotonic()
+        activity.set_current(f"FileAssistant: {task[:60]}...", agent="file")
+        activity.emit("file_assistant", f"Задача: {task[:80]}", agent="file")
 
         session = self._get_session(session_id)
         session.append({"role": "user", "content": task})
@@ -274,6 +285,8 @@ class FileAssistant:
                 "usage": {},
                 "error": str(exc),
             }
+        finally:
+            activity.clear_current()
 
     async def _call_api_stream(self, messages: list[dict]):
         """Streaming version of _call_api with tool-calling loop.
@@ -409,6 +422,9 @@ class FileAssistant:
                             fn["name"],
                             ", ".join(f"{k}={v!r}" for k, v in arguments.items()),
                         )
+                        activity.emit("tool_call", f"FileAssistant: {fn['name']}", agent="file",
+                                      detail={"tool": fn["name"]})
+                        activity.set_current(f"FileAssistant → {fn['name']}...", agent="file")
                         result = await self.mcp_client.call_tool(fn["name"], arguments)
 
                         # Track files affected
