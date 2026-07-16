@@ -3150,8 +3150,7 @@ async function pollRagIndexStatus() {
         ragIndexBadge.classList.remove('done', 'error');
         ragIndexBadgeSpinner.hidden = false;
         const progress = st.total ? ` ${st.done}/${st.total}` : '…';
-        const current = st.current ? ` — ${st.current}` : '';
-        ragIndexBadgeText.textContent = `Индексация RAG${progress}${current}`;
+        ragIndexBadgeText.textContent = `Индексация RAG${progress}`;
         // Убираем hint из предыдущего error-состояния
         const oldHint = ragIndexBadge.querySelector('.rag-index-badge-hint');
         if (oldHint) oldHint.remove();
