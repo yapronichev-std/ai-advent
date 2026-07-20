@@ -313,6 +313,65 @@ async def list_tools() -> list[types.Tool]:
                 "required": ["path", "old_string", "new_string"],
             },
         ),
+        types.Tool(
+            name="git_log",
+            description=(
+                "Return recent git commit log. If 'range' is provided "
+                "(e.g. 'v1.0.0..HEAD'), shows commits in that range. "
+                "Otherwise shows the last max_count commits. "
+                "Use this to understand what changes have been made."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "range": {
+                        "type": "string",
+                        "description": "Optional: commit range like 'v1.0.0..HEAD' or 'main..feature'",
+                    },
+                    "max_count": {
+                        "type": "integer",
+                        "description": "Maximum number of commits to return. Default: 100.",
+                        "default": 100,
+                    },
+                },
+                "required": [],
+            },
+        ),
+        types.Tool(
+            name="git_last_tag",
+            description=(
+                "Return the most recent git tag (via 'git describe --tags --abbrev=0'). "
+                "Returns null if no tags exist. "
+                "Use this to determine the starting point for a release."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        ),
+        types.Tool(
+            name="git_tag",
+            description=(
+                "Create an annotated git tag. Use this as the final step of a release "
+                "pipeline. Requires 'name' (e.g. 'v1.2.0') and optional 'message' "
+                "(annotation text). Returns the tag name and commit hash."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Tag name, e.g. 'v1.2.0'",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Optional annotation message for the tag. If empty, tag name is used.",
+                    },
+                },
+                "required": ["name"],
+            },
+        ),
     ]
 
 
@@ -340,6 +399,12 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             result = _handle_write_file(arguments)
         elif name == "edit_file":
             result = _handle_edit_file(arguments)
+        elif name == "git_log":
+            result = _handle_git_log(arguments)
+        elif name == "git_last_tag":
+            result = _handle_git_last_tag()
+        elif name == "git_tag":
+            result = _handle_git_tag(arguments)
         else:
             raise ValueError(f"Unknown tool: '{name}'")
 
@@ -917,6 +982,47 @@ def _handle_edit_file(arguments: dict) -> dict:
         "diff": diff_text[:20_000],
         "applied": True,
     }
+
+
+# ── Release pipeline helpers ───────────────────────────────────────────────────
+
+def _handle_git_log(arguments: dict) -> dict:
+    """Return recent git log entries."""
+    range_ = arguments.get("range", "")
+    max_count = arguments.get("max_count", 100)
+    cmd = ["log", "--oneline", "--no-decorate", f"-n{max_count}"]
+    if range_:
+        cmd.append(range_)
+    result = _run_git(cmd, timeout=15)
+    if not result["ok"]:
+        return result
+    commits: list[dict] = []
+    for line in result["stdout"].strip().splitlines():
+        if len(line) >= 8 and line[7] == " ":
+            commits.append({"hash": line[:7], "message": line[8:]})
+        elif line.strip():
+            commits.append({"hash": line[:7] if len(line) >= 7 else line, "message": line})
+    return {"ok": True, "commits": commits, "total": len(commits)}
+
+
+def _handle_git_last_tag() -> dict:
+    """Return the most recent git tag, or null."""
+    result = _run_git(["describe", "--tags", "--abbrev=0"], timeout=10)
+    if result["ok"] and result["stdout"].strip():
+        return {"tag": result["stdout"].strip()}
+    return {"tag": None}
+
+
+def _handle_git_tag(arguments: dict) -> dict:
+    """Create an annotated git tag."""
+    name = arguments["name"]
+    message = arguments.get("message", name)
+    tag_result = _run_git(["tag", "-a", name, "-m", message], timeout=10)
+    if not tag_result["ok"]:
+        return tag_result
+    commit = _run_git(["rev-parse", "HEAD"], timeout=10)
+    commit_hash = commit["stdout"].strip()[:7] if commit["ok"] else "?"
+    return {"ok": True, "name": name, "commit": commit_hash}
 
 
 async def main() -> None:

@@ -788,6 +788,28 @@ class ChatAgent:
             self._save_history()
             return response_text
 
+        if cmd == "/release":
+            if not self.mcp_client:
+                return "❌ MCP-клиент недоступен — не могу выполнить release pipeline."
+            from release import ReleasePipeline, format_release_result
+            activity.set_current("Release pipeline...", agent="release")
+            try:
+                pipeline = ReleasePipeline(
+                    mcp_client=self.mcp_client,
+                    telegram_client=self.telegram_client,
+                    telegram_chat_id=self.telegram_chat_id,
+                    api_key=self.api_key,
+                    deepseek_api_key=self.deepseek_api_key,
+                    model=self.model,
+                )
+                result = await pipeline.execute()
+                return format_release_result(result)
+            except Exception as e:
+                logger.exception("[agent] /release failed")
+                return f"❌ Release pipeline упал: {e}"
+            finally:
+                activity.clear_current()
+
         if cmd == "/help":
             if args:
                 # /help <question> — use RAG + MCP to answer project questions
@@ -829,7 +851,9 @@ class ChatAgent:
                 "  /invariants               — list all invariants\n"
                 "  /invariant-del <n>        — delete invariant by number\n"
                 "  /invariant-off <n>        — temporarily disable invariant\n"
-                "  /invariant-on <n>         — re-enable invariant"
+                "  /invariant-on <n>         — re-enable invariant\n"
+                "\nRelease:\n"
+                "  /release                  — автоматический релиз: changelog, версия, тег, Telegram"
             )
 
         return None  # unknown command — let the LLM handle it
