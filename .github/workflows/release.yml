@@ -19,8 +19,14 @@ jobs:
       - name: Get tag info
         id: tag
         run: |
-          echo "name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          echo "message=$(git tag -l --format='%(contents)' ${GITHUB_REF#refs/tags/})" >> $GITHUB_OUTPUT
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          echo "name=${TAG_NAME}" >> $GITHUB_OUTPUT
+          # Multiline output — use heredoc syntax to avoid GITHUB_OUTPUT format errors
+          {
+            echo "message<<EOF"
+            git tag -l --format='%(contents)' "${TAG_NAME}"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
 
       - name: Read changelog
         id: changelog
