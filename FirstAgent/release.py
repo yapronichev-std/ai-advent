@@ -168,7 +168,11 @@ class ReleasePipeline:
         activity.emit("release", "CHANGELOG.md записан", agent="release",
                       detail={"path": "docs/CHANGELOG.md"})
 
-        # 7. Создать тег
+        # 6a. Закоммитить CHANGELOG.md
+        await self._commit_changelog(version)
+        activity.emit("release", "CHANGELOG.md закоммичен", agent="release")
+
+        # 7. Создать тег (на коммите с CHANGELOG.md)
         await self._create_tag(version, summary)
         activity.emit("release", f"Тег {version} создан", agent="release",
                       detail={"tag": version})
@@ -352,6 +356,21 @@ class ReleasePipeline:
         except Exception as e:
             logger.error("[release] git_tag error: %s", e)
             raise
+
+    async def _commit_changelog(self, version: str) -> None:
+        """Закоммитить CHANGELOG.md через git_add + git_commit."""
+        # git add docs/CHANGELOG.md
+        add_result = await self.mcp.call_tool("git_add", {"paths": ["docs/CHANGELOG.md"]})
+        add = json.loads(add_result)
+        if not add.get("ok"):
+            logger.warning("[release] git_add failed, continuing: %s", add.get("stderr", ""))
+        # git commit
+        result_json = await self.mcp.call_tool("git_commit", {"message": f"chore: update CHANGELOG.md for {version}"})
+        commit = json.loads(result_json)
+        if commit.get("ok"):
+            logger.info("[release] committed CHANGELOG.md: %s", commit.get("commit", "?"))
+        else:
+            logger.warning("[release] git_commit failed (maybe nothing to commit): %s", commit.get("stderr", ""))
 
     async def _push_tag(self, version: str) -> bool:
         """Запушить тег на GitHub remote. Возвращает True если успешно."""

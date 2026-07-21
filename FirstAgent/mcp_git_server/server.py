@@ -396,6 +396,42 @@ async def list_tools() -> list[types.Tool]:
                 "required": [],
             },
         ),
+        types.Tool(
+            name="git_add",
+            description=(
+                "Stage files for commit (git add). "
+                "Set 'paths' to a list of file paths to stage, or omit to stage all changes (git add .). "
+                "Use this before git_commit to prepare a release changelog or other files."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional: list of file paths to stage. If empty, stages all changes.",
+                    },
+                },
+                "required": [],
+            },
+        ),
+        types.Tool(
+            name="git_commit",
+            description=(
+                "Create a git commit with the given message. "
+                "Use this after git_add to commit the release changelog before creating a tag."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "Commit message (required).",
+                    },
+                },
+                "required": ["message"],
+            },
+        ),
     ]
 
 
@@ -431,6 +467,10 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             result = _handle_git_tag(arguments)
         elif name == "git_push":
             result = _handle_git_push(arguments)
+        elif name == "git_add":
+            result = _handle_git_add(arguments)
+        elif name == "git_commit":
+            result = _handle_git_commit(arguments)
         else:
             raise ValueError(f"Unknown tool: '{name}'")
 
@@ -1068,6 +1108,34 @@ def _handle_git_push(arguments: dict) -> dict:
         "stdout": result["stdout"],
         "stderr": result["stderr"],
         "exit_code": result["exit_code"],
+    }
+
+
+def _handle_git_add(arguments: dict) -> dict:
+    """Stage files for commit."""
+    paths = arguments.get("paths", [])
+    if paths:
+        result = _run_git(["add"] + paths, timeout=15)
+    else:
+        result = _run_git(["add", "."], timeout=15)
+    return {
+        "ok": result["ok"],
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
+    }
+
+
+def _handle_git_commit(arguments: dict) -> dict:
+    """Create a commit with the given message."""
+    message = arguments["message"]
+    result = _run_git(["commit", "-m", message], timeout=15)
+    commit = _run_git(["rev-parse", "HEAD"], timeout=10)
+    commit_hash = commit["stdout"].strip()[:7] if commit["ok"] else "?"
+    return {
+        "ok": result["ok"],
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
+        "commit": commit_hash,
     }
 
 
