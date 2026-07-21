@@ -372,6 +372,30 @@ async def list_tools() -> list[types.Tool]:
                 "required": ["name"],
             },
         ),
+        types.Tool(
+            name="git_push",
+            description=(
+                "Push a branch or tag to the remote origin. "
+                "Use this after creating a release tag to publish it to GitHub. "
+                "Set 'ref' to the branch or tag name (e.g. 'main' or 'v1.2.0'). "
+                "Set 'tags'=true to push all tags."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "ref": {
+                        "type": "string",
+                        "description": "Branch or tag name to push (e.g. 'main', 'v1.2.0'). If empty, pushes current branch.",
+                    },
+                    "tags": {
+                        "type": "boolean",
+                        "description": "Push all tags (--tags). If true, 'ref' is ignored.",
+                        "default": False,
+                    },
+                },
+                "required": [],
+            },
+        ),
     ]
 
 
@@ -405,6 +429,8 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             result = _handle_git_last_tag()
         elif name == "git_tag":
             result = _handle_git_tag(arguments)
+        elif name == "git_push":
+            result = _handle_git_push(arguments)
         else:
             raise ValueError(f"Unknown tool: '{name}'")
 
@@ -1023,6 +1049,26 @@ def _handle_git_tag(arguments: dict) -> dict:
     commit = _run_git(["rev-parse", "HEAD"], timeout=10)
     commit_hash = commit["stdout"].strip()[:7] if commit["ok"] else "?"
     return {"ok": True, "name": name, "commit": commit_hash}
+
+
+def _handle_git_push(arguments: dict) -> dict:
+    """Push a branch or tag to remote origin."""
+    ref = arguments.get("ref", "")
+    push_tags = arguments.get("tags", False)
+
+    if push_tags:
+        result = _run_git(["push", "origin", "--tags"], timeout=30)
+    elif ref:
+        result = _run_git(["push", "origin", ref], timeout=30)
+    else:
+        result = _run_git(["push", "origin"], timeout=30)
+
+    return {
+        "ok": result["ok"],
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
+        "exit_code": result["exit_code"],
+    }
 
 
 async def main() -> None:

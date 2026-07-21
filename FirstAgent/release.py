@@ -71,13 +71,14 @@ def format_release_result(result: dict) -> str:
     cats = result.get("categories", {})
     summary = result.get("summary", "")
     telegram = "✅" if result.get("telegram_sent") else "❌ (не настроен)"
+    pushed = "✅" if result.get("pushed") else "❌"
 
     lines = [
         f"## 🚀 Релиз {version}",
         "",
         f"**{summary}**" if summary else "",
         "",
-        f"📦 Коммитов: **{total}**  |  🏷 Тег: `{tag}`  |  ✈️ Telegram: {telegram}",
+        f"📦 Коммитов: **{total}**  |  🏷 Тег: `{tag}`  |  🚀 GitHub: {pushed}  |  ✈️ Telegram: {telegram}",
         "",
         "### Изменения",
     ]
@@ -172,7 +173,12 @@ class ReleasePipeline:
         activity.emit("release", f"Тег {version} создан", agent="release",
                       detail={"tag": version})
 
-        # 8. Telegram-уведомление
+        # 8. Запушить тег на GitHub
+        pushed = await self._push_tag(version)
+        activity.emit("release", f"Тег {version} запушен на GitHub" if pushed else "Пуш тега не удался",
+                      agent="release", detail={"tag": version, "pushed": pushed})
+
+        # 9. Telegram-уведомление
         telegram_sent = await self._notify_telegram(version, summary, categories)
 
         return {
@@ -183,6 +189,7 @@ class ReleasePipeline:
             "categories": categories,
             "summary": summary,
             "telegram_sent": telegram_sent,
+            "pushed": pushed,
         }
 
     # ── Private helpers ─────────────────────────────────────────────────────────
@@ -345,6 +352,19 @@ class ReleasePipeline:
         except Exception as e:
             logger.error("[release] git_tag error: %s", e)
             raise
+
+    async def _push_tag(self, version: str) -> bool:
+        """Запушить тег на GitHub remote. Возвращает True если успешно."""
+        try:
+            result_json = await self.mcp.call_tool("git_push", {"ref": version})
+            result = json.loads(result_json)
+            ok = result.get("ok", False)
+            if not ok:
+                logger.warning("[release] git_push failed: %s", result.get("stderr", ""))
+            return ok
+        except Exception as e:
+            logger.warning("[release] git_push error: %s", e)
+            return False
 
     async def _notify_telegram(
         self, version: str, summary: str, categories: dict
