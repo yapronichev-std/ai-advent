@@ -18,6 +18,8 @@ from rag import RAGStore, rewrite_query, rerank_results
 
 logger = logging.getLogger(__name__)
 
+from activity import activity
+
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
 
@@ -79,6 +81,23 @@ class SupportAgent:
         return any(phrase in text_lower for phrase in self._POSITIVE_FEEDBACK)
 
     async def answer_question(
+        self,
+        question: str,
+        user_identifier: str = "",
+        ticket_id: str = "",
+        session_id: str = "default",
+    ) -> dict:
+        activity.set_current("SupportAgent: обработка вопроса...", agent="support")
+        activity.emit("support", f"Вопрос: {question[:60]}", agent="support")
+        try:
+            return await self._answer_question_inner(
+                question, user_identifier=user_identifier,
+                ticket_id=ticket_id, session_id=session_id,
+            )
+        finally:
+            activity.clear_current()
+
+    async def _answer_question_inner(
         self,
         question: str,
         user_identifier: str = "",
@@ -240,6 +259,8 @@ class SupportAgent:
                 rag_sources = final_results
                 if not rag_sources and rerank["before_count"] > 0:
                     rag_no_context = True
+                activity.emit("rag_retrieve", f"Найдено {len(rag_sources)} источников", agent="support",
+                              detail={"count": len(rag_sources)})
             except Exception as exc:
                 logger.warning("[support] RAG retrieval failed: %s", exc)
 

@@ -44,6 +44,9 @@ document.querySelectorAll('.main-nav-tab').forEach(btn => {
             loadSupportUsers();
             loadSupportStatus();
         }
+        if (tab === 'file') {
+            loadFileStatus();
+        }
     });
 });
 
@@ -142,21 +145,97 @@ const reviewRagSources     = document.getElementById('review-rag-sources');
 const MAX_MESSAGE_HISTORY = 10;
 const MH_STORAGE_KEY = 'chat_message_history';
 
-function _loadMessageHistory() {
-    try {
-        const raw = localStorage.getItem(MH_STORAGE_KEY);
-        return raw ? JSON.parse(raw) : [];
-    } catch { return []; }
-}
-function _saveMessageHistory() {
-    try {
-        localStorage.setItem(MH_STORAGE_KEY, JSON.stringify(messageHistory));
-    } catch { /* quota exceeded — ignore */ }
+/**
+ * Factory: creates input history navigation for a chat textarea.
+ *
+ * Sets up keydown listeners for Enter (submit), ArrowUp/ArrowDown (history)
+ * on the given input element. Returns { push, clear } to manage history.
+ *
+ * If storageKey is provided, history is persisted to localStorage.
+ */
+function createInputHistory({ input, form, clearBtn, storageKey, maxHistory = MAX_MESSAGE_HISTORY }) {
+    let history = storageKey ? _load(storageKey) : [];
+    let cursor = -1;
+    let draft = '';
+
+    function _load(key) {
+        try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : []; }
+        catch { return []; }
+    }
+    function _save() {
+        if (!storageKey) return;
+        try { localStorage.setItem(storageKey, JSON.stringify(history)); }
+        catch { /* quota exceeded */ }
+    }
+
+    function push(text) {
+        if (history[0] !== text) {
+            history.unshift(text);
+            if (history.length > maxHistory) history.pop();
+            _save();
+        }
+        cursor = -1;
+        draft = '';
+    }
+
+    function clear() {
+        history = storageKey ? _load(storageKey) : [];
+        if (storageKey) { history.length = 0; _save(); }
+        else { history = []; }
+        cursor = -1;
+        draft = '';
+    }
+
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            form.dispatchEvent(new Event('submit'));
+            return;
+        }
+
+        if (e.key === 'ArrowUp' && history.length > 0) {
+            e.preventDefault();
+            if (cursor === -1) {
+                draft = input.value;
+                cursor = 0;
+            } else if (cursor < history.length - 1) {
+                cursor++;
+            }
+            input.value = history[cursor];
+            input.setSelectionRange(input.value.length, input.value.length);
+            input.dispatchEvent(new Event('input'));
+        }
+
+        if (e.key === 'ArrowDown') {
+            if (cursor > 0) {
+                e.preventDefault();
+                cursor--;
+                input.value = history[cursor];
+                input.setSelectionRange(input.value.length, input.value.length);
+                input.dispatchEvent(new Event('input'));
+            } else if (cursor === 0) {
+                e.preventDefault();
+                cursor = -1;
+                input.value = draft;
+                draft = '';
+                input.dispatchEvent(new Event('input'));
+            }
+        }
+    });
+
+    if (clearBtn) {
+        clearBtn.addEventListener('click', clear);
+    }
+
+    return { push, clear };
 }
 
-const messageHistory = _loadMessageHistory();
-let historyCursor = -1;    // -1 = not navigating, 0 = latest, N = older
-let historyDraft = '';     // saved text before navigation
+// ── Chat tab history (persisted to localStorage) ─────────────────────────────
+const chatHistory = createInputHistory({
+    input: document.getElementById('input'),
+    form: document.getElementById('chat-form'),
+    storageKey: MH_STORAGE_KEY,
+});
 
 // ── Project switching ────────────────────────────────────────────────────────
 
@@ -748,57 +827,11 @@ form.addEventListener('submit', (e) => {
     const text = input.value.trim();
     if (!text) return;
 
-    // Save to message history (persisted in localStorage)
-    if (messageHistory[0] !== text) {
-        messageHistory.unshift(text);
-        if (messageHistory.length > MAX_MESSAGE_HISTORY) messageHistory.pop();
-        _saveMessageHistory();
-    }
-    historyCursor = -1;
-    historyDraft = '';
+    chatHistory.push(text);
 
     input.value = '';
     input.style.height = 'auto';
     sendMessage(text);
-});
-
-input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        form.dispatchEvent(new Event('submit'));
-        return;
-    }
-
-    // ── Up/Down arrow: message history navigation ────────────────────────
-    if (e.key === 'ArrowUp' && messageHistory.length > 0) {
-        e.preventDefault();
-        if (historyCursor === -1) {
-            historyDraft = input.value;
-            historyCursor = 0;
-        } else if (historyCursor < messageHistory.length - 1) {
-            historyCursor++;
-        }
-        input.value = messageHistory[historyCursor];
-        // Move cursor to end of text
-        input.setSelectionRange(input.value.length, input.value.length);
-        input.dispatchEvent(new Event('input')); // trigger auto-resize
-    }
-
-    if (e.key === 'ArrowDown') {
-        if (historyCursor > 0) {
-            e.preventDefault();
-            historyCursor--;
-            input.value = messageHistory[historyCursor];
-            input.setSelectionRange(input.value.length, input.value.length);
-            input.dispatchEvent(new Event('input'));
-        } else if (historyCursor === 0) {
-            e.preventDefault();
-            historyCursor = -1;
-            input.value = historyDraft;
-            historyDraft = '';
-            input.dispatchEvent(new Event('input'));
-        }
-    }
 });
 
 input.addEventListener('input', () => {
@@ -819,6 +852,11 @@ const localForm         = document.getElementById('local-chat-form');
 const localInput        = document.getElementById('local-input');
 const localSendBtn      = document.getElementById('local-send-btn');
 const localClearBtn     = document.getElementById('local-clear-btn');
+const localInputHistory = createInputHistory({
+    input: localInput,
+    form: localForm,
+    clearBtn: localClearBtn,
+});
 const localModelSelect  = document.getElementById('local-model-select');
 
 let localHistoryLoaded  = false;
@@ -1149,16 +1187,12 @@ localForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const text = localInput.value.trim();
     if (!text) return;
+
+    localInputHistory.push(text);
+
     localInput.value = '';
     localInput.style.height = 'auto';
     sendLocalMessage(text);
-});
-
-localInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        localForm.dispatchEvent(new Event('submit'));
-    }
 });
 
 localInput.addEventListener('input', () => {
@@ -1954,6 +1988,11 @@ const remoteInput = document.getElementById('remote-input');
 const remoteSendBtn = document.getElementById('remote-send-btn');
 const remoteStopBtn = document.getElementById('remote-stop-btn');
 const remoteClearBtn = document.getElementById('remote-clear-btn');
+const remoteInputHistory = createInputHistory({
+    input: remoteInput,
+    form: remoteForm,
+    clearBtn: remoteClearBtn,
+});
 let remoteAbortController = null;  // for stopping in-flight generation
 const remoteStatusDot = document.getElementById('remote-status-dot');
 const remoteDiagBar = document.getElementById('remote-diag-bar');
@@ -2030,12 +2069,20 @@ function setRemoteOffline(reason) {
 
 // ── Chat ──────────────────────────────────────────────────────────────────
 
+remoteInput.addEventListener('input', () => {
+    remoteInput.style.height = 'auto';
+    remoteInput.style.height = `${remoteInput.scrollHeight}px`;
+});
+
 remoteForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const text = remoteInput.value.trim();
     if (!text || !remoteAvailable) return;
 
+    remoteInputHistory.push(text);
+
     remoteInput.value = '';
+    remoteInput.style.height = 'auto';
     remoteSendBtn.style.display = 'none';
     remoteStopBtn.style.display = '';
     remoteStopBtn.disabled = false;
@@ -2522,6 +2569,11 @@ const supportForm          = document.getElementById('support-chat-form');
 const supportInput         = document.getElementById('support-input');
 const supportSendBtn       = document.getElementById('support-send-btn');
 const supportClearBtn      = document.getElementById('support-clear-btn');
+const supportInputHistory = createInputHistory({
+    input: supportInput,
+    form: supportForm,
+    clearBtn: supportClearBtn,
+});
 
 // ── Load users into dropdown ──────────────────────────────────────────────
 
@@ -2716,12 +2768,20 @@ async function refreshUserTickets(userId) {
 
 // ── Chat ──────────────────────────────────────────────────────────────────
 
+supportInput.addEventListener('input', () => {
+    supportInput.style.height = 'auto';
+    supportInput.style.height = `${supportInput.scrollHeight}px`;
+});
+
 supportForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const question = supportInput.value.trim();
     if (!question) return;
 
+    supportInputHistory.push(question);
+
     supportInput.value = '';
+    supportInput.style.height = 'auto';
     supportInput.disabled = true;
     supportSendBtn.disabled = true;
 
@@ -2907,3 +2967,340 @@ async function loadSupportStatus() {
         supportStatusBar.innerHTML = `<span style="color:#ef4444;">Ошибка загрузки статуса</span>`;
     }
 }
+
+// ── File Assistant Tab ─────────────────────────────────────────────────────────
+
+let fileFilesAffected = [];
+let fileSessionId = 'file_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+
+const fileStatusBar    = document.getElementById('file-status-bar');
+const fileMessages     = document.getElementById('file-messages');
+const fileForm         = document.getElementById('file-chat-form');
+const fileInput        = document.getElementById('file-input');
+const fileSendBtn      = document.getElementById('file-send-btn');
+const fileClearBtn     = document.getElementById('file-clear-btn');
+const fileInputHistory  = createInputHistory({
+    input: fileInput,
+    form: fileForm,
+    clearBtn: fileClearBtn,
+});
+const fileAffectedList = document.getElementById('file-affected-list');
+
+async function loadFileStatus() {
+    try {
+        const res = await fetch('/file/status');
+        const data = await res.json();
+        if (data.available) {
+            fileStatusBar.innerHTML = `<span>Ready &middot; ${data.tool_count} tools &middot; ${escapeHtml(data.model)}</span>`;
+        } else {
+            fileStatusBar.innerHTML = `<span style="color:#ef4444;">Unavailable: ${escapeHtml(data.error || 'unknown')}</span>`;
+        }
+    } catch (e) {
+        fileStatusBar.innerHTML = `<span style="color:#ef4444;">Cannot reach file assistant</span>`;
+    }
+}
+
+function appendFileMessage(role, text) {
+    const emptyState = fileMessages.querySelector('.empty-state');
+    if (emptyState) emptyState.remove();
+
+    const el = document.createElement('div');
+    el.className = `message ${role}`;
+    el.textContent = text;
+    fileMessages.appendChild(el);
+    fileMessages.scrollTop = fileMessages.scrollHeight;
+    return el;
+}
+
+function renderFileFilesAffected() {
+    fileAffectedList.innerHTML = '';
+    if (fileFilesAffected.length === 0) {
+        fileAffectedList.innerHTML = '<div class="file-empty">No files affected yet.</div>';
+    } else {
+        fileFilesAffected.forEach(f => {
+            const el = document.createElement('div');
+            el.className = 'file-affected-item';
+            el.textContent = f;
+            fileAffectedList.appendChild(el);
+        });
+    }
+}
+
+// Tab activation hook for the nav button
+const fileTabBtn = document.querySelector('.main-nav-tab[data-tab="file"]');
+if (fileTabBtn) {
+    fileTabBtn.addEventListener('click', loadFileStatus);
+}
+
+fileInput.addEventListener('input', () => {
+    fileInput.style.height = 'auto';
+    fileInput.style.height = `${fileInput.scrollHeight}px`;
+});
+
+fileForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const task = fileInput.value.trim();
+    if (!task) return;
+
+    fileInputHistory.push(task);
+
+    fileInput.value = '';
+    fileInput.style.height = 'auto';
+    fileInput.disabled = true;
+    fileSendBtn.disabled = true;
+
+    appendFileMessage('user', task);
+
+    // Create a streaming message element
+    const streamEl = document.createElement('div');
+    streamEl.className = 'message assistant';
+    fileMessages.appendChild(streamEl);
+    fileMessages.scrollTop = fileMessages.scrollHeight;
+
+    const emptyState = fileMessages.querySelector('.empty-state');
+    if (emptyState) emptyState.remove();
+
+    try {
+        const resp = await fetch('/file/query/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task, session_id: fileSessionId }),
+        });
+
+        if (!resp.ok) {
+            streamEl.textContent = `Error: HTTP ${resp.status}`;
+        } else {
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';  // keep incomplete line
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    const dataStr = line.slice(6);
+                    try {
+                        const event = JSON.parse(dataStr);
+                        if (event.token) {
+                            streamEl.textContent += event.token;
+                        }
+                        if (event.tool) {
+                            // Show tool usage as a subtle indicator
+                            const toolNote = document.createElement('span');
+                            toolNote.className = 'file-tool-note';
+                            toolNote.textContent = ` 🔧 ${event.tool}`;
+                            streamEl.appendChild(toolNote);
+                        }
+                        if (event.done) {
+                            fileFilesAffected = event.files_affected || [];
+                            renderFileFilesAffected();
+                        }
+                        fileMessages.scrollTop = fileMessages.scrollHeight;
+                    } catch (e) {
+                        // skip malformed JSON
+                    }
+                }
+            }
+        }
+    } catch (err) {
+        streamEl.textContent = `Network error: ${escapeHtml(err.message)}`;
+    }
+
+    fileInput.disabled = false;
+    fileSendBtn.disabled = false;
+    fileInput.focus();
+});
+
+fileClearBtn.addEventListener('click', () => {
+    fileSessionId = 'file_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    fileFilesAffected = [];
+    fileMessages.innerHTML = '<div class="empty-state">Give me a file-related task. Examples:<br>'
+        + '"Find all usages of ChatAgent across the codebase"<br>'
+        + '"Check all Python files for error handling patterns"<br>'
+        + '"Generate a CHANGELOG.md from recent git commits"</div>';
+    renderFileFilesAffected();
+});
+// ═══════════════════════════════════════════════════════════════════════════
+// RAG indexing status badge (в шапке, виден на всех вкладках)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const ragIndexBadge = document.getElementById('rag-index-badge');
+const ragIndexBadgeText = document.getElementById('rag-index-badge-text');
+const ragIndexBadgeSpinner = document.getElementById('rag-index-badge-spinner');
+
+async function pollRagIndexStatus() {
+    let st;
+    try {
+        const res = await fetch('/rag/index-status');
+        st = await res.json();
+    } catch (e) {
+        // сервер ещё поднимается или сеть — повторим позже
+        setTimeout(pollRagIndexStatus, 5000);
+        return;
+    }
+
+    if (st.state === 'indexing') {
+        ragIndexBadge.hidden = false;
+        ragIndexBadge.classList.remove('done', 'error');
+        ragIndexBadgeSpinner.hidden = false;
+        const progress = st.total ? ` ${st.done}/${st.total}` : '…';
+        ragIndexBadgeText.textContent = `Индексация RAG${progress}`;
+        // Убираем hint из предыдущего error-состояния
+        const oldHint = ragIndexBadge.querySelector('.rag-index-badge-hint');
+        if (oldHint) oldHint.remove();
+        setTimeout(pollRagIndexStatus, 2000);
+    } else if (st.state === 'error') {
+        ragIndexBadge.hidden = false;
+        ragIndexBadge.classList.remove('done');
+        ragIndexBadge.classList.add('error');
+        ragIndexBadgeSpinner.hidden = true;
+        ragIndexBadgeText.textContent = '⚠ Индексация RAG не удалась';
+
+        // Показываем hint (подсказку), если бэкенд её передал
+        let hintEl = ragIndexBadge.querySelector('.rag-index-badge-hint');
+        if (st.hint) {
+            if (!hintEl) {
+                hintEl = document.createElement('div');
+                hintEl.className = 'rag-index-badge-hint';
+                ragIndexBadge.appendChild(hintEl);
+            }
+            hintEl.textContent = st.hint;
+        } else if (hintEl) {
+            hintEl.remove();
+        }
+    } else if (st.state === 'done') {
+        // Индексация завершена — показываем результат
+        ragIndexBadge.hidden = false;
+        ragIndexBadge.classList.remove('error');
+        ragIndexBadge.classList.add('done');
+        ragIndexBadgeSpinner.hidden = true;
+        ragIndexBadgeText.textContent = `✓ RAG готов (${st.rag_chunks} chunks)`;
+        // Убираем hint из предыдущего error-состояния
+        const oldHint = ragIndexBadge.querySelector('.rag-index-badge-hint');
+        if (oldHint) oldHint.remove();
+        // Прячем бейдж через 6s, но продолжаем редкий поллинг (на случай смены проекта)
+        setTimeout(() => { ragIndexBadge.hidden = true; }, 6000);
+        setTimeout(pollRagIndexStatus, 30_000);
+    } else if (st.state === 'idle') {
+        // индексация ещё не началась (lifespan в процессе) — проверим снова
+        setTimeout(pollRagIndexStatus, 2000);
+    } else {
+        // Неизвестное состояние — продолжаем поллинг
+        setTimeout(pollRagIndexStatus, 5000);
+    }
+}
+
+pollRagIndexStatus();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Activity footer (глобальная панель активности агента)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const activityFooter = document.getElementById('activity-footer');
+const activityBar = document.getElementById('activity-bar');
+const activitySpinner = document.getElementById('activity-spinner');
+const activityText = document.getElementById('activity-text');
+const activityLog = document.getElementById('activity-log');
+const activityLogInner = document.getElementById('activity-log-inner');
+
+let activityExpanded = false;
+let activityLatestId = 0;
+
+activityBar.addEventListener('click', () => {
+    activityExpanded = !activityExpanded;
+    activityLog.hidden = !activityExpanded;
+    activityFooter.classList.toggle('open', activityExpanded);
+    if (activityExpanded) {
+        activityLog.scrollTop = activityLog.scrollHeight;
+    }
+});
+
+function formatActivityTime(isoString) {
+    const d = new Date(isoString);
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const ss = String(d.getSeconds()).padStart(2, '0');
+    return `${hh}:${mm}:${ss}`;
+}
+
+async function pollActivity() {
+    let state;
+    try {
+        const res = await fetch(`/activity?since=${activityLatestId}`);
+        if (!res.ok) throw new Error(res.status);
+        state = await res.json();
+    } catch (e) {
+        // сервер перезапускается или недоступен — повторим позже
+        setTimeout(pollActivity, 3000);
+        return;
+    }
+
+    // Сервер перезапустился (deque сброшен) — сбрасываем курсор
+    if (state.latest_id < activityLatestId) {
+        activityLatestId = 0;
+    }
+
+    // ── Текущее действие (статус-бар) ──
+    if (state.current_action) {
+        activitySpinner.hidden = false;
+        activityText.textContent = state.current_action.message;
+        activityBar.classList.add('busy');
+    } else {
+        activitySpinner.hidden = true;
+        activityText.textContent = 'Готов';
+        activityBar.classList.remove('busy');
+    }
+
+    // ── Новые события в лог ──
+    if (state.events && state.events.length > 0) {
+        // Автоскролл только если лог уже внизу (или скрыт)
+        const atBottom = activityLog.hidden ||
+            (activityLog.scrollTop + activityLog.clientHeight >= activityLog.scrollHeight - 24);
+
+        for (const evt of state.events) {
+            const item = document.createElement('div');
+            item.className = 'activity-log-item';
+
+            const ts = document.createElement('span');
+            ts.className = 'activity-log-ts';
+            ts.textContent = formatActivityTime(evt.ts);
+
+            const agentBadge = document.createElement('span');
+            agentBadge.className = 'activity-log-agent ' + (evt.agent || '');
+            agentBadge.textContent = evt.agent || '?';
+
+            const msg = document.createElement('span');
+            msg.className = 'activity-log-msg';
+            msg.textContent = evt.message;
+            msg.title = evt.message;
+
+            item.append(ts, agentBadge, msg);
+            activityLogInner.appendChild(item);
+        }
+
+        // Ограничиваем DOM (как deque maxlen=200 на бэкенде)
+        while (activityLogInner.children.length > 200) {
+            activityLogInner.removeChild(activityLogInner.firstChild);
+        }
+
+        if (atBottom) {
+            activityLog.scrollTop = activityLog.scrollHeight;
+        }
+    }
+
+    if (state.latest_id > activityLatestId) {
+        activityLatestId = state.latest_id;
+    }
+
+    // 1.5s при активности, 3s в простое
+    const interval = activityBar.classList.contains('busy') ? 1500 : 3000;
+    setTimeout(pollActivity, interval);
+}
+
+pollActivity();

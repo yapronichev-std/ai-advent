@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
+from activity import activity
 from agent import ChatAgent
 from code_review import CodeReviewAgent
 from config import load_system_prompt, save_system_prompt
@@ -31,6 +32,7 @@ from mcp_telegram_client import MCPTelegramClient
 from mcp_weather import MCPWeatherClient
 from profiles import UserProfileManager
 from rag import RAGStore, RAGRetriever, compare_strategies, rewrite_query, rerank_results
+from file_assistant import FileAssistant
 from support_agent import SupportAgent
 
 load_dotenv()
@@ -67,7 +69,38 @@ rag_store: RAGStore | None = None
 review_agent: CodeReviewAgent | None = None
 crm_client: MCPCRMClient | None = None
 support_agent: SupportAgent | None = None
+file_assistant: FileAssistant | None = None
 control_questions: list[dict] = []
+
+# ── RAG indexing status (отдаётся в UI через GET /rag/index-status) ──────────
+rag_index_status: dict = {
+    "state": "idle",   # idle | indexing | done | error
+    "total": 0,        # файлов к индексации
+    "done": 0,         # файлов проиндексировано
+    "current": "",     # текущий файл
+    "error": "",
+    "hint": "",        # подсказка пользователю (например, как запустить Ollama)
+}
+
+OLLAMA_START_HINT = (
+    "Запустите Ollama и скачайте модель эмбеддингов:\n"
+    "  ollama serve\n"
+    "  ollama pull nomic-embed-text\n"
+    "Затем перезапустите приложение или переключите проект для повторной индексации."
+)
+
+
+async def _check_ollama() -> str:
+    """Проверить доступность Ollama. Возвращает пустую строку если OK, иначе сообщение об ошибке."""
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection("127.0.0.1", 11434), timeout=3.0
+        )
+        writer.close()
+        await writer.wait_closed()
+        return ""
+    except Exception as e:
+        return f"Ollama недоступна (localhost:11434): {e}"
 
 
 def _parse_control_questions(filepath: str) -> list[dict]:
@@ -116,11 +149,30 @@ def get_agent(user_id: str) -> ChatAgent:
 
 
 async def _index_project_docs(rag_store: RAGStore) -> None:
+    """Auto-index project docs into RAG + activity-события для панели активности."""
+    activity.set_current("Индексация документации проекта...", agent="system")
+    try:
+        await _index_project_docs_inner(rag_store)
+    finally:
+        activity.clear_current()
+
+
+async def _index_project_docs_inner(rag_store: RAGStore) -> None:
     """Auto-index README.md, CLAUDE.md and all text files from docs/ into RAG.
 
     Uses the active project path from rag_store.
     Skips sources that are already indexed to avoid duplicates across restarts.
     """
+    rag_index_status.update(state="indexing", total=0, done=0, current="", error="", hint="")
+
+    # ── Quick health check: убедимся, что Ollama доступна ───────────────────
+    err = await _check_ollama()
+    if err:
+        print(f"  RAG indexing ABORTED: {err}")
+        rag_index_status.update(state="error", error=err, current="", hint=OLLAMA_START_HINT)
+        activity.emit("rag_index", "Индексация прервана: Ollama недоступна", agent="system")
+        return
+
     project_root = Path(rag_store.project_path).resolve()
     docs_to_index: list[tuple[str, str, str]] = []  # (filepath, source_label, strategy)
 
@@ -145,6 +197,7 @@ async def _index_project_docs(rag_store: RAGStore) -> None:
 
     if not docs_to_index:
         print("No project documentation files found to index into RAG")
+        rag_index_status.update(state="done", current="")
         return
 
     # ── Determine which sources are already indexed ─────────────────────────
@@ -166,29 +219,57 @@ async def _index_project_docs(rag_store: RAGStore) -> None:
 
     if not new_docs:
         print(f"Project docs already indexed ({len(docs_to_index)} sources up to date)")
+        rag_index_status.update(state="done", current="")
         return
 
     print(f"Indexing {len(new_docs)} new project documentation file(s) into RAG...")
+    rag_index_status.update(total=len(new_docs))
+    activity.emit("rag_index", f"Индексация {len(new_docs)} файлов документации...", agent="system",
+                  detail={"total": len(new_docs)})
     indexed = 0
+    embedding_failures = 0
     for filepath, source, strategy in new_docs:
+        rag_index_status.update(current=source)
+        activity.set_current(f"Индексация: {source}...", agent="system")
         try:
             text = Path(filepath).read_text(encoding="utf-8")
             # Skip very large files (> 1MB) to avoid overwhelming RAG
             if len(text) > 1_000_000:
                 print(f"  SKIP (too large, {len(text)} bytes): {source}")
+                activity.emit("rag_index", f"Пропущен (слишком большой): {source}", agent="system",
+                              detail={"source": source, "size": len(text)})
+                rag_index_status["done"] += 1
                 continue
             result = await rag_store.add_document(text=text, source=source, strategy=strategy)
             print(f"  OK  {source} → {result.get('chunks', 0)} chunks [{result.get('strategy', strategy)}]")
+            activity.emit("rag_index", f"Проиндексирован: {source} ({result.get('chunks', 0)} чанков)",
+                          agent="system",
+                          detail={"source": source, "chunks": result.get("chunks", 0)})
             indexed += 1
         except Exception as e:
             print(f"  FAIL  {source}: {e}")
+            activity.emit("rag_index", f"Ошибка индексации: {source}", agent="system",
+                          detail={"source": source, "error": str(e)})
+            embedding_failures += 1
+            if embedding_failures >= 2:
+                msg = f"Два сбоя эмбеддинга подряд — вероятно Ollama недоступна: {e}"
+                print(f"  RAG indexing ABORTED — {msg}")
+                rag_index_status.update(state="error", error=msg, current="", hint=OLLAMA_START_HINT)
+                activity.emit("rag_index", "Индексация прервана: сбои эмбеддинга", agent="system")
+                return
+        else:
+            embedding_failures = 0  # сброс при успехе
+        rag_index_status["done"] += 1
 
+    rag_index_status.update(state="done", current="")
+    activity.emit("rag_index", f"Проиндексировано {indexed}/{len(new_docs)} файлов", agent="system",
+                  detail={"indexed": indexed, "total": len(new_docs)})
     print(f"Project docs indexed: {indexed}/{len(new_docs)} new")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global api_key, deepseek_api_key, mcp_client, git_client, search_client, telegram_client, telegram_chat_id, diagram_pipeline, rag_store, crm_client, support_agent
+    global api_key, deepseek_api_key, mcp_client, git_client, search_client, telegram_client, telegram_chat_id, diagram_pipeline, rag_store, crm_client, support_agent, file_assistant
     api_key = os.getenv("OPENROUTER_API_KEY", "")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set in .env")
@@ -264,9 +345,19 @@ async def lifespan(app: FastAPI):
         print(f"WARNING: RAGStore unavailable: {e}")
         rag_store = None
 
-    # ── Auto-index project documentation into RAG ────────────────────────────
+    # ── Auto-index project documentation into RAG (в фоне, чтобы не блокировать старт) ──
+    index_task: asyncio.Task | None = None
     if rag_store:
-        await _index_project_docs(rag_store)
+        async def _index_in_background(store: RAGStore) -> None:
+            try:
+                await _index_project_docs(store)
+            except Exception as e:
+                hint = OLLAMA_START_HINT if "ollama" in str(e).lower() or "connect" in str(e).lower() else ""
+                rag_index_status.update(state="error", error=str(e), current="", hint=hint)
+                print(f"WARNING: background RAG indexing failed: {e}")
+
+        index_task = asyncio.create_task(_index_in_background(rag_store))
+        print("RAG indexing started in background (server is available immediately)")
 
     # ── Code Review Agent ──────────────────────────────────────────────────────
     global review_agent
@@ -297,15 +388,51 @@ async def lifespan(app: FastAPI):
         print(f"WARNING: SupportAgent unavailable: {e}")
         support_agent = None
 
+    # ── File Assistant Agent ────────────────────────────────────────────────────
+    try:
+        file_assistant = FileAssistant(
+            api_key=api_key,
+            deepseek_api_key=deepseek_api_key,
+            model=DEFAULT_MODEL,
+            mcp_client=mcp_client,
+        )
+        print("FileAssistant ready")
+    except Exception as e:
+        print(f"WARNING: FileAssistant unavailable: {e}")
+        file_assistant = None
+
     # ── Control questions ───────────────────────────────────────────────────
     global control_questions
     control_questions = _parse_control_questions("docs/горчев/контрольные вопросы.txt")
     print(f"Control questions loaded: {len(control_questions)}")
 
+    activity.emit("system", "Приложение запущено", agent="system")
+
     yield
 
+    # ── Shutdown cleanup ─────────────────────────────────────────────────────
+    # Отменяем фоновую индексацию, если ещё идёт
+    if index_task and not index_task.done():
+        index_task.cancel()
+        try:
+            await index_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    # MCP disconnect: anyio cancel scopes внутри MCP-клиентов ломаются при
+    # отмене lifespan-таска uvicorn'ом. Отключаем их тихо — соединения
+    # всё равно закроются по TCP timeout при выходе процесса.
     if mcp_client:
-        await mcp_client.disconnect()
+        import logging as _logging
+        _mcp_logger = _logging.getLogger("mcp_multi")
+        _prev_level = _mcp_logger.level
+        _mcp_logger.setLevel(_logging.ERROR)
+        try:
+            await mcp_client.disconnect()
+        except (asyncio.CancelledError, Exception):
+            pass
+        finally:
+            _mcp_logger.setLevel(_prev_level)
 
 
 app = FastAPI(title="Chat Agent", lifespan=lifespan)
@@ -468,6 +595,21 @@ async def clear_history(user_id: str = Query(default="default")):
 
 # ── Project switching ───────────────────────────────────────────────────────────
 
+@app.get("/rag/index-status")
+async def get_rag_index_status():
+    """Return the current state of background RAG documentation indexing."""
+    return {
+        **rag_index_status,
+        "rag_chunks": rag_store.count() if rag_store else 0,
+    }
+
+
+@app.get("/activity")
+async def get_activity(since: int = Query(default=0)):
+    """Return recent activity events and current agent action (for the bottom panel)."""
+    return activity.get_state(since=since)
+
+
 @app.get("/project")
 async def get_project_info():
     """Return current project root, branch, and indexed doc count."""
@@ -574,6 +716,16 @@ async def switch_project_stream(request: dict):
         raise HTTPException(status_code=400, detail=f"Not a directory: {new_path}")
 
     async def event_stream():
+        activity.set_current(f"Переключение проекта: {new_path.name}...", agent="system")
+        activity.emit("project_switch", f"Переключение на {new_path.name}", agent="system",
+                      detail={"path": str(new_path)})
+        try:
+            async for chunk in _switch_project_events(new_path):
+                yield chunk
+        finally:
+            activity.clear_current()
+
+    async def _switch_project_events(new_path):
         # ── Stage 1: Git reconnect ────────────────────────────────────────
         yield _sse({"type": "progress", "stage": "git", "message": "Reconnecting git...",
                       "current": 0, "total": 1})
@@ -593,6 +745,13 @@ async def switch_project_stream(request: dict):
         if rag_store:
             rag_store.set_project(str(new_path))
             if rag_store.count() == 0:
+                # ── Health check: Ollama должна быть доступна ──────────────
+                ollama_err = await _check_ollama()
+                if ollama_err:
+                    rag_index_status.update(state="error", error=ollama_err, current="", hint=OLLAMA_START_HINT)
+                    yield _sse({"type": "error", "message": ollama_err})
+                    return
+
                 # Collect and index — inline for progress events
                 project_root = new_path
                 docs_to_index: list[tuple[str, str, str]] = []
@@ -609,21 +768,45 @@ async def switch_project_stream(request: dict):
                             docs_to_index.append((str(fpath), str(fpath.relative_to(project_root)), "fixed"))
 
                 total = len(docs_to_index)
+                rag_index_status.update(state="indexing", total=total, done=0, current="", error="", hint="")
                 yield _sse({"type": "progress", "stage": "rag", "message": f"Indexing {total} docs...",
                               "current": 0, "total": total})
 
+                embedding_failures = 0
                 for i, (filepath, source, strategy) in enumerate(docs_to_index):
+                    rag_index_status.update(current=source)
+                    activity.set_current(f"Индексация: {source}...", agent="system")
                     try:
                         text = Path(filepath).read_text(encoding="utf-8")
                         if len(text) > 1_000_000:
+                            activity.emit("rag_index", f"Пропущен (слишком большой): {source}", agent="system",
+                                          detail={"source": source, "size": len(text)})
+                            rag_index_status["done"] += 1
                             continue
-                        await rag_store.add_document(text=text, source=source, strategy=strategy)
+                        result = await rag_store.add_document(text=text, source=source, strategy=strategy)
+                        activity.emit("rag_index",
+                                      f"Проиндексирован: {source} ({result.get('chunks', 0)} чанков)",
+                                      agent="system",
+                                      detail={"source": source, "chunks": result.get("chunks", 0)})
                         yield _sse({"type": "progress", "stage": "rag",
                                       "message": f"Indexed: {source}",
                                       "current": i + 1, "total": total})
-                    except Exception:
-                        pass
+                        embedding_failures = 0
+                    except Exception as e:
+                        activity.emit("rag_index", f"Ошибка индексации: {source}", agent="system",
+                                      detail={"source": source, "error": str(e)})
+                        embedding_failures += 1
+                        if embedding_failures >= 2:
+                            msg = f"Два сбоя эмбеддинга подряд — Ollama недоступна: {e}"
+                            rag_index_status.update(state="error", error=msg, current="", hint=OLLAMA_START_HINT)
+                            yield _sse({"type": "error", "message": msg})
+                            return
+                    rag_index_status["done"] += 1
+                rag_index_status.update(state="done", current="")
+                activity.emit("rag_index", f"Проиндексировано {total} файлов документации", agent="system",
+                              detail={"total": total})
             else:
+                rag_index_status.update(state="done", current="")
                 yield _sse({"type": "progress", "stage": "rag",
                               "message": f"Already indexed ({rag_store.count()} chunks) — skipping",
                               "current": 1, "total": 1})
@@ -1830,6 +2013,88 @@ async def review_local(request: LocalReviewRequest):
     )
 
 
+# ── File Assistant Agent ───────────────────────────────────────────────────────
+
+
+class FileQueryRequest(BaseModel):
+    task: str
+    session_id: str = "default"
+
+
+class FileQueryResponse(BaseModel):
+    answer: str = ""
+    files_affected: list[str] = []
+    usage: dict = {}
+    elapsed_ms: int = 0
+    error: str = ""
+
+
+# ── File Assistant Agent ───────────────────────────────────────────────────────
+
+
+@app.get("/file/status")
+async def file_status():
+    """Check FileAssistant availability and MCP tool readiness."""
+    if not file_assistant:
+        return {"available": False, "error": "FileAssistant not initialized"}
+    mcp_ok = file_assistant.mcp_client is not None
+    tool_count = len(file_assistant.mcp_client.tools) if mcp_ok else 0
+    return {
+        "available": True,
+        "mcp_available": mcp_ok,
+        "tool_count": tool_count,
+        "model": file_assistant.model,
+    }
+
+
+@app.post("/file/query", response_model=FileQueryResponse)
+async def file_query(request: FileQueryRequest):
+    """Execute a file-related task using the File Assistant agent.
+
+    The agent will proactively use tools like search_content, read_file,
+    and write_file to complete the task. It may touch multiple files.
+    """
+    if not file_assistant:
+        raise HTTPException(status_code=503, detail="FileAssistant unavailable")
+    if not request.task.strip():
+        raise HTTPException(status_code=400, detail="task is required")
+
+    try:
+        result = await file_assistant.execute(
+            task=request.task,
+            session_id=request.session_id,
+        )
+    except Exception as e:
+        logger.exception("FileAssistant failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return FileQueryResponse(
+        answer=result["answer"],
+        files_affected=result.get("files_affected", []),
+        usage=result.get("usage", {}),
+        elapsed_ms=result.get("elapsed_ms", 0),
+        error=result.get("error", ""),
+    )
+
+
+@app.post("/file/query/stream")
+async def file_query_stream(request: FileQueryRequest):
+    """SSE-streamed file task — tokens arrive as the LLM generates them."""
+    if not file_assistant:
+        raise HTTPException(status_code=503, detail="FileAssistant unavailable")
+    if not request.task.strip():
+        raise HTTPException(status_code=400, detail="task is required")
+
+    async def event_gen():
+        async for event in file_assistant.execute_stream(
+            task=request.task,
+            session_id=request.session_id,
+        ):
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
 # ── Support Agent ──────────────────────────────────────────────────────────────
 
 
@@ -2053,10 +2318,24 @@ async def add_rag_document_stream(request: RAGDocumentRequest):
     fmt = request.format if request.format in ("auto", "text", "html", "mhtml") else "auto"
 
     async def event_gen():
-        async for event in rag_store.add_document_stream(
-            request.text, source=request.source, strategy=strategy, format=fmt
-        ):
-            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        src = request.source or "документ"
+        activity.set_current(f"Индексация: {src}...", agent="system")
+        try:
+            async for event in rag_store.add_document_stream(
+                request.text, source=request.source, strategy=strategy, format=fmt
+            ):
+                if event.get("type") == "done":
+                    activity.emit("rag_index",
+                                  f"Проиндексирован: {event.get('source') or src} ({event.get('chunks', 0)} чанков)",
+                                  agent="system",
+                                  detail={"source": event.get("source") or src,
+                                          "chunks": event.get("chunks", 0)})
+                elif event.get("type") == "error":
+                    activity.emit("rag_index", f"Ошибка индексации: {src}", agent="system",
+                                  detail={"source": src, "error": event.get("message", "")})
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        finally:
+            activity.clear_current()
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 

@@ -18,6 +18,11 @@
                 <button class="main-nav-tab" data-tab="rag">RAG</button>
                 <button class="main-nav-tab" data-tab="review">Code Review</button>
                 <button class="main-nav-tab" data-tab="support">Support</button>
+                <button class="main-nav-tab" data-tab="file">File Assistant</button>
+            </div>
+            <div class="rag-index-badge" id="rag-index-badge" hidden>
+                <span class="rag-index-badge-spinner" id="rag-index-badge-spinner"></span>
+                <span id="rag-index-badge-text"></span>
             </div>
         </nav>
 
@@ -664,6 +669,62 @@
 
             </div>
         </div>
+
+        <!-- ══ File Assistant tab ══ -->
+        <div class="main-tab-panel" id="tab-file">
+            <div class="file-page">
+
+                <!-- Left: Status + Files affected -->
+                <div class="file-left">
+                    <div class="file-section-title">Status</div>
+                    <div class="file-status-bar" id="file-status-bar">
+                        <span>Checking...</span>
+                    </div>
+
+                    <div class="file-section-title">Files Affected</div>
+                    <div class="file-affected-list" id="file-affected-list">
+                        <div class="file-empty">No files affected yet.</div>
+                    </div>
+                </div>
+
+                <!-- Right: Chat -->
+                <div class="file-chat-container">
+                    <header class="chat-header">
+                        <h1>File Assistant</h1>
+                        <button id="file-clear-btn" title="Clear history">Clear</button>
+                    </header>
+
+                    <div class="messages" id="file-messages">
+                        <div class="empty-state">Give me a file-related task. Examples:<br>
+                        "Find all usages of ChatAgent across the codebase"<br>
+                        "Check all Python files for error handling patterns"<br>
+                        "Generate a CHANGELOG.md from recent git commits"</div>
+                    </div>
+
+                    <form class="input-area" id="file-chat-form">
+                        <textarea
+                            id="file-input"
+                            placeholder='Describe what you want done with project files…'
+                            rows="1"
+                        ></textarea>
+                        <button type="submit" id="file-send-btn">Send</button>
+                    </form>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- ══ Activity footer (глобальная панель активности агента) ══ -->
+        <footer class="activity-footer" id="activity-footer">
+            <div class="activity-bar" id="activity-bar">
+                <span class="activity-spinner" id="activity-spinner" hidden></span>
+                <span class="activity-text" id="activity-text">Готов</span>
+                <span class="activity-toggle" id="activity-toggle">▾</span>
+            </div>
+            <div class="activity-log" id="activity-log" hidden>
+                <div class="activity-log-inner" id="activity-log-inner"></div>
+            </div>
+        </footer>
 
     </div>
 
