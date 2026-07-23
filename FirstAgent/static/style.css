@@ -439,7 +439,7 @@ body {
 /* Project bar */
 .project-bar {
     flex-shrink: 0;
-    padding: 5px 12px;
+    padding: 7px 14px;
     border-bottom: 1px solid #e5e7eb;
     background: #f8fafc;
     display: flex;
@@ -468,18 +468,18 @@ body {
 }
 
 .project-label {
-    font-size: 13px;
+    font-size: 14px;
     color: #374151;
     font-weight: 500;
     flex-shrink: 0;
 }
 
 .project-name {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
     color: #1f2937;
     flex-shrink: 0;
-    max-width: 180px;
+    max-width: 200px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -487,10 +487,10 @@ body {
 
 .project-path-input {
     flex: 1;
-    max-width: 320px;
-    font-size: 11px;
+    max-width: 340px;
+    font-size: 12px;
     font-family: "SF Mono", "Menlo", "Monaco", "Consolas", monospace;
-    padding: 2px 6px;
+    padding: 3px 8px;
     border: 1px solid #d1d5db;
     border-radius: 4px;
     background: #fff;
