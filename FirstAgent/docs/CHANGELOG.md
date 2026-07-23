@@ -2,24 +2,24 @@
 
 ## v0.3.1 (2026-07-23)
 
-Исправлены ошибки в работе скрипта /release: теперь ветка пушится перед созданием тега, а ссылка на CHANGELOG ведёт на тег, а не на main. Также обновлены конфигурации и файл изменений.
+Релиз содержит исправления в процессе релиза: корректная работа пуша ветки и правильная ссылка на CHANGELOG.md, а также технические обновления.
 
-**5 commits** in `v0.3.0..v0.3.1`
+**6 commits** in `v0.3.0..v0.3.1`
 
 ### 🐛 Исправления
 
-- /release пушит ветку перед тегом, а не только тег
-- ссылка на CHANGELOG.md в релизе указывает на тег, а не на main
+- Исправлена отправка ветки перед тегом в /release
+- Исправлена ссылка на CHANGELOG.md в релизе — теперь указывает на тег, а не на main
 
 ### 🔧 Обслуживание
 
-- update CHANGELOG.md for v0.3.1
-- add PyCharm run configuration (Uvicorn)
-- update CHANGELOG.md for v0.3.1
+- Обновление CHANGELOG.md для v0.3.1
+- Добавлена конфигурация запуска PyCharm (Uvicorn)
 
 <details>
-<summary>Все 5 коммитов</summary>
+<summary>Все 6 коммитов</summary>
 
+- `b540234` chore: update CHANGELOG.md for v0.3.1
 - `7b564a8` chore: update CHANGELOG.md for v0.3.1
 - `a26ad0a` chore: add PyCharm run configuration (Uvicorn)
 - `9f49499` chore: update CHANGELOG.md for v0.3.1
