@@ -474,6 +474,17 @@ body {
     flex-shrink: 0;
 }
 
+.project-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: #1f2937;
+    flex-shrink: 0;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .project-path-input {
     flex: 1;
     max-width: 320px;
