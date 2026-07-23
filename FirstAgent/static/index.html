@@ -26,6 +26,27 @@
             </div>
         </nav>
 
+        <!-- ── Global project bar (видна на всех вкладках) ── -->
+        <div class="project-bar" id="project-bar">
+            <div class="project-bar-left">
+                <span class="project-label">📁</span>
+                <input id="project-path-input" class="project-path-input"
+                       placeholder="/path/to/project" autocomplete="off" spellcheck="false">
+                <button id="project-browse-btn" class="project-browse-btn" title="Select folder">📂</button>
+                <button id="project-switch-btn" class="project-switch-btn">Switch</button>
+                <span class="project-info" id="project-info">
+                    <span class="project-branch" id="project-branch">—</span>
+                    <span class="project-chunks" id="project-chunks"></span>
+                </span>
+            </div>
+            <div class="project-progress-wrap" id="project-progress-wrap" hidden>
+                <div class="project-progress-bar">
+                    <div class="project-progress-fill" id="project-progress-fill"></div>
+                </div>
+                <span class="project-progress-label" id="project-progress-label"></span>
+            </div>
+        </div>
+
         <!-- ══ Chat tab ══ -->
         <div class="main-tab-panel active" id="tab-chat">
             <div class="app-layout">
@@ -62,24 +83,6 @@
                         </div>
                         <div class="token-warning" id="token-warning" hidden>
                             ⚠ Token usage exceeded 80% of limit
-                        </div>
-                    </div>
-
-                    <div class="project-bar" id="project-bar">
-                        <span class="project-label">📁 Project</span>
-                        <input id="project-path-input" class="project-path-input"
-                               placeholder="/path/to/project" autocomplete="off" spellcheck="false">
-                        <button id="project-browse-btn" class="project-browse-btn" title="Select folder">📂</button>
-                        <button id="project-switch-btn" class="project-switch-btn">Switch</button>
-                        <span class="project-info" id="project-info">
-                            <span class="project-branch" id="project-branch">—</span>
-                            <span class="project-chunks" id="project-chunks"></span>
-                        </span>
-                        <div class="project-progress-wrap" id="project-progress-wrap" hidden>
-                            <div class="project-progress-bar">
-                                <div class="project-progress-fill" id="project-progress-fill"></div>
-                            </div>
-                            <span class="project-progress-label" id="project-progress-label"></span>
                         </div>
                     </div>
 
