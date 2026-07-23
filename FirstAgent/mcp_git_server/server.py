@@ -435,7 +435,8 @@ async def list_tools() -> list[types.Tool]:
         types.Tool(
             name="git_fetch_tags",
             description=(
-                "Fetch all tags from the remote origin (git fetch --tags). "
+                "Fetch all tags from the remote origin (git fetch --tags --force). "
+                "Use --force to overwrite local tags that may point to stale commits. "
                 "Use this at the start of a release pipeline to ensure local tags "
                 "are up-to-date with remote releases made from other machines."
             ),
@@ -1108,7 +1109,7 @@ def _handle_git_tag(arguments: dict) -> dict:
 
 def _handle_git_fetch_tags() -> dict:
     """Fetch all tags from remote origin."""
-    result = _run_git(["fetch", "--tags"], timeout=30)
+    result = _run_git(["fetch", "--tags", "--force"], timeout=30)
     fetched = [line.strip() for line in result["stderr"].splitlines() if "tag" in line.lower()]
     return {
         "ok": result["ok"],
