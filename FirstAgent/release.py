@@ -129,6 +129,9 @@ class ReleasePipeline:
         """Основной пайплайн релиза."""
         activity.emit("release", "Запуск release pipeline...", agent="release")
 
+        # 0. Подтянуть теги с remote (вдруг релиз был сделан с другого компьютера)
+        await self._fetch_tags()
+
         # 1. Получить последний тег
         last_tag = await self._get_last_tag()
 
@@ -178,8 +181,8 @@ class ReleasePipeline:
                       detail={"tag": version})
 
         # 8. Запушить тег на GitHub
-        pushed = await self._push_tag(version)
-        activity.emit("release", f"Тег {version} запушен на GitHub" if pushed else "Пуш тега не удался",
+        pushed = await self._push_branch_and_tag(version)
+        activity.emit("release", f"Ветка и тег {version} запушены на GitHub" if pushed else "Пуш ветки/тега не удался",
                       agent="release", detail={"tag": version, "pushed": pushed})
 
         # 9. Telegram-уведомление
@@ -197,6 +200,19 @@ class ReleasePipeline:
         }
 
     # ── Private helpers ─────────────────────────────────────────────────────────
+
+    async def _fetch_tags(self) -> None:
+        """Подтянуть теги с remote (на случай если релиз делался с другого компьютера)."""
+        try:
+            result = await self.mcp.call_tool("git_fetch_tags", {})
+            data = json.loads(result)
+            if data.get("ok"):
+                fetched = data.get("fetched", [])
+                if fetched:
+                    logger.info("[release] fetched tags: %s", fetched)
+                    activity.emit("release", f"Подтянуто {len(fetched)} тегов с remote", agent="release")
+        except Exception as e:
+            logger.warning("[release] git_fetch_tags failed (non-fatal): %s", e)
 
     async def _get_last_tag(self) -> str | None:
         try:
@@ -372,18 +388,32 @@ class ReleasePipeline:
         else:
             logger.warning("[release] git_commit failed (maybe nothing to commit): %s", commit.get("stderr", ""))
 
-    async def _push_tag(self, version: str) -> bool:
-        """Запушить тег на GitHub remote. Возвращает True если успешно."""
+    async def _push_branch_and_tag(self, version: str) -> bool:
+        """Запушить текущую ветку и тег на GitHub. Возвращает True если оба успешно."""
+        branch_pushed = False
+        tag_pushed = False
+
+        # 1. Пуш ветки (чтобы CHANGELOG.md был на GitHub)
         try:
-            result_json = await self.mcp.call_tool("git_push", {"ref": version})
-            result = json.loads(result_json)
-            ok = result.get("ok", False)
-            if not ok:
-                logger.warning("[release] git_push failed: %s", result.get("stderr", ""))
-            return ok
+            branch_result = await self.mcp.call_tool("get_git_branch", {})
+            branch_data = json.loads(branch_result)
+            branch_name = branch_data.get("current_branch", "")
+            if branch_name:
+                bp = await self.mcp.call_tool("git_push", {"ref": branch_name})
+                branch_pushed = json.loads(bp).get("ok", False)
+                logger.info("[release] branch push: %s → %s", branch_name, branch_pushed)
         except Exception as e:
-            logger.warning("[release] git_push error: %s", e)
-            return False
+            logger.warning("[release] branch push error: %s", e)
+
+        # 2. Пуш тега
+        try:
+            tp = await self.mcp.call_tool("git_push", {"ref": version})
+            tag_pushed = json.loads(tp).get("ok", False)
+            logger.info("[release] tag push: %s → %s", version, tag_pushed)
+        except Exception as e:
+            logger.warning("[release] tag push error: %s", e)
+
+        return branch_pushed and tag_pushed
 
     async def _notify_telegram(
         self, version: str, summary: str, categories: dict

@@ -73,6 +73,7 @@ const modelSelect      = document.getElementById('model-select');
 
 // ── Project bar elements ────────────────────────────────────────────────────
 const projectBar       = document.getElementById('project-bar');
+const projectName      = document.getElementById('project-name');
 const projectPathInput = document.getElementById('project-path-input');
 const projectSwitchBtn = document.getElementById('project-switch-btn');
 const projectBranch    = document.getElementById('project-branch');
@@ -245,6 +246,7 @@ async function loadProjectInfo() {
         if (!res.ok) return;
         const info = await res.json();
         projectPathInput.value = info.project_root || '';
+        projectName.textContent = info.project_root ? info.project_root.split('/').pop() || info.project_root : '—';
         projectBranch.textContent = info.git_branch || '—';
         const count = info.rag_doc_count || 0;
         projectChunks.textContent = count ? `${count} chunks indexed` : '';
@@ -335,6 +337,7 @@ async function switchProject() {
         }
 
         if (result) {
+            projectName.textContent = newPath.split('/').pop() || newPath;
             projectBranch.textContent = result.git_branch || '?';
             const skipped = result.rag_skipped ? ' (reuse)' : '';
             projectChunks.textContent = result.rag_chunks
