@@ -432,6 +432,19 @@ async def list_tools() -> list[types.Tool]:
                 "required": ["message"],
             },
         ),
+        types.Tool(
+            name="git_fetch_tags",
+            description=(
+                "Fetch all tags from the remote origin (git fetch --tags). "
+                "Use this at the start of a release pipeline to ensure local tags "
+                "are up-to-date with remote releases made from other machines."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        ),
     ]
 
 
@@ -471,6 +484,8 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             result = _handle_git_add(arguments)
         elif name == "git_commit":
             result = _handle_git_commit(arguments)
+        elif name == "git_fetch_tags":
+            result = _handle_git_fetch_tags()
         else:
             raise ValueError(f"Unknown tool: '{name}'")
 
@@ -1089,6 +1104,18 @@ def _handle_git_tag(arguments: dict) -> dict:
     commit = _run_git(["rev-parse", "HEAD"], timeout=10)
     commit_hash = commit["stdout"].strip()[:7] if commit["ok"] else "?"
     return {"ok": True, "name": name, "commit": commit_hash}
+
+
+def _handle_git_fetch_tags() -> dict:
+    """Fetch all tags from remote origin."""
+    result = _run_git(["fetch", "--tags"], timeout=30)
+    fetched = [line.strip() for line in result["stderr"].splitlines() if "tag" in line.lower()]
+    return {
+        "ok": result["ok"],
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
+        "fetched": fetched,
+    }
 
 
 def _handle_git_push(arguments: dict) -> dict:

@@ -129,6 +129,9 @@ class ReleasePipeline:
         """Основной пайплайн релиза."""
         activity.emit("release", "Запуск release pipeline...", agent="release")
 
+        # 0. Подтянуть теги с remote (вдруг релиз был сделан с другого компьютера)
+        await self._fetch_tags()
+
         # 1. Получить последний тег
         last_tag = await self._get_last_tag()
 
@@ -197,6 +200,19 @@ class ReleasePipeline:
         }
 
     # ── Private helpers ─────────────────────────────────────────────────────────
+
+    async def _fetch_tags(self) -> None:
+        """Подтянуть теги с remote (на случай если релиз делался с другого компьютера)."""
+        try:
+            result = await self.mcp.call_tool("git_fetch_tags", {})
+            data = json.loads(result)
+            if data.get("ok"):
+                fetched = data.get("fetched", [])
+                if fetched:
+                    logger.info("[release] fetched tags: %s", fetched)
+                    activity.emit("release", f"Подтянуто {len(fetched)} тегов с remote", agent="release")
+        except Exception as e:
+            logger.warning("[release] git_fetch_tags failed (non-fatal): %s", e)
 
     async def _get_last_tag(self) -> str | None:
         try:
